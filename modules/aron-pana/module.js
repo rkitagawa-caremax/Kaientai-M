@@ -27,7 +27,7 @@
 
     let logLines = [];
     let currentTab = 'upload';
-    const AUTO_STATE_STORAGE_KEY = 'kaientai-aron-pana-autostate-v2';
+    const AUTO_STATE_STORAGE_KEY = 'kaientai-aron-pana-autostate-v1';
     let autoPersistTimer = null;
     let cloudPersistTimer = null;
     let cloudPersistInFlight = false;
