@@ -3,19 +3,25 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>Kaientai-M</title>
+    <link rel="icon" type="image/png" sizes="512x512" href="core/assets/favicon-large.png">
+    <link rel="shortcut icon" href="core/assets/favicon-large.png">
+    <link rel="apple-touch-icon" href="core/assets/app-logo.png">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
-    <link rel="stylesheet" href="core/style.css">
+    <link rel="stylesheet" href="core/style.css?v=20260219-1">
 </head>
 <body>
     <div id="app">
         <!-- Sidebar -->
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
-                <span class="logo-icon">&#9876;</span>
+                <span class="logo-icon"><img src="core/assets/app-logo.png" alt="Kaientai-M Logo" class="logo-icon-img"></span>
                 <div>
                     <h1 class="logo-text">Kaientai-M</h1>
                     <span class="logo-sub">Marketing Platform</span>
@@ -29,7 +35,7 @@
                 <!-- Module nav items injected here by core.js -->
             </nav>
             <div class="sidebar-footer">
-                <span class="version">v1.0.0</span>
+                <span class="version">v1.0.1</span>
             </div>
         </aside>
 
@@ -49,10 +55,10 @@
         </main>
     </div>
 
-    <script src="core/firebase.js"></script>
-    <script src="core/core.js"></script>
+    <script src="core/firebase.js?v=20260219-1"></script>
+    <script src="core/core.js?v=20260219-1"></script>
     <!-- Modules auto-register themselves -->
-    <script src="modules/aron-pana/module.js"></script>
+    <script src="modules/aron-pana/module.js?v=20260219-1"></script>
     <!-- Add new modules here: -->
     <!-- <script src="modules/new-module/module.js"></script> -->
 </body>
