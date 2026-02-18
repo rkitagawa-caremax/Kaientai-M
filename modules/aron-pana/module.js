@@ -27,6 +27,11 @@
 
     let logLines = [];
     let currentTab = 'upload';
+    const AUTO_STATE_STORAGE_KEY = 'kaientai-aron-pana-autostate-v2';
+    let autoPersistTimer = null;
+    let cloudPersistTimer = null;
+    let cloudPersistInFlight = false;
+    let cloudPersistPending = false;
 
     function pfx(id) { return MODULE_ID + '-' + id; }
     const COL_AB = 27; // AB列（都道府県）
@@ -185,6 +190,155 @@
         if (el) el.textContent = logLines.join('\n');
         const logBox = document.getElementById(pfx('load-log'));
         if (logBox) logBox.style.display = 'block';
+    }
+
+    function resetAnalysisOutputs(statusLabel = '読込済（再分析待ち）') {
+        state.results = null;
+        state.storeBaseCache = {};
+        state.storeViewRuntime = null;
+        state.storeCurrentPage = 1;
+        state.storeCurrentPageTotal = 1;
+
+        Object.keys(state.charts).forEach(k => destroyChart(state.charts, k));
+        ['overview', 'monthly', 'store', 'sim', 'details'].forEach(id => {
+            const emp = document.getElementById(pfx(id + '-empty'));
+            const con = document.getElementById(pfx(id + '-content'));
+            if (emp) emp.style.display = '';
+            if (con) con.style.display = 'none';
+        });
+        if (statusLabel) KaientaiM.updateModuleStatus(MODULE_ID, statusLabel, false);
+    }
+
+    function readProgressDraftInputs() {
+        const snapshot = {};
+        const prefix = pfx('progress-');
+        document.querySelectorAll(`[id^="${prefix}"]`).forEach(el => {
+            if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement)) return;
+            const key = el.id.slice(prefix.length);
+            if (!key) return;
+            snapshot[key] = el.value;
+        });
+        return snapshot;
+    }
+
+    function applyProgressDraftInputs(snapshot) {
+        if (!snapshot || typeof snapshot !== 'object') return;
+        const prefix = pfx('progress-');
+        Object.keys(snapshot).forEach(key => {
+            const el = document.getElementById(prefix + key);
+            if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement)) return;
+            el.value = toStr(snapshot[key]);
+        });
+    }
+
+    function buildAutoStatePayload() {
+        return {
+            schemaVersion: 2,
+            savedAt: new Date().toISOString(),
+            shippingData: state.shippingData,
+            salesData: state.salesData,
+            productData: state.productData,
+            settings: getSettings(),
+            progressDraft: readProgressDraftInputs()
+        };
+    }
+
+    async function persistCloudStateNow() {
+        if (!window.KaientaiCloud || typeof window.KaientaiCloud.saveModuleState !== 'function') return false;
+        if (!(window.KaientaiCloud.isReady && window.KaientaiCloud.isReady())) return false;
+        await window.KaientaiCloud.saveModuleState(MODULE_ID, buildAutoStatePayload());
+        return true;
+    }
+
+    function flushCloudStateSaveQueue() {
+        if (cloudPersistInFlight) {
+            cloudPersistPending = true;
+            return;
+        }
+        cloudPersistInFlight = true;
+        (async () => {
+            try {
+                await persistCloudStateNow();
+            } catch (err) {
+                console.warn('persistCloudStateNow failed', err);
+            } finally {
+                cloudPersistInFlight = false;
+                if (cloudPersistPending) {
+                    cloudPersistPending = false;
+                    scheduleCloudStateSave(1200);
+                }
+            }
+        })();
+    }
+
+    function scheduleCloudStateSave(delay = 1800) {
+        if (cloudPersistTimer) clearTimeout(cloudPersistTimer);
+        cloudPersistTimer = setTimeout(() => {
+            cloudPersistTimer = null;
+            flushCloudStateSaveQueue();
+        }, Math.max(200, delay));
+    }
+
+    function saveAutoStateNow() {
+        try {
+            localStorage.setItem(AUTO_STATE_STORAGE_KEY, JSON.stringify(buildAutoStatePayload()));
+        } catch (err) {
+            console.warn('saveAutoStateNow failed', err);
+        }
+        scheduleCloudStateSave(1200);
+    }
+
+    function scheduleAutoStateSave(delay = 600) {
+        if (autoPersistTimer) clearTimeout(autoPersistTimer);
+        autoPersistTimer = setTimeout(() => {
+            autoPersistTimer = null;
+            saveAutoStateNow();
+        }, Math.max(0, delay));
+    }
+
+    function applyLoadedPayload(payload, sourceLabel) {
+        if (!payload || !Array.isArray(payload.shippingData) || !Array.isArray(payload.salesData) || !Array.isArray(payload.productData)) {
+            return false;
+        }
+
+        state.shippingData = payload.shippingData;
+        state.salesData = payload.salesData;
+        state.productData = payload.productData;
+        resetAnalysisOutputs('データ復元済（再分析待ち）');
+        restoreSavedSettings(payload.settings || {});
+        applyProgressDraftInputs(payload.progressDraft || {});
+        updateUploadCardsByState();
+        checkAllLoaded();
+        if (sourceLabel) log(sourceLabel);
+        return true;
+    }
+
+    function restoreAutoState() {
+        try {
+            const raw = localStorage.getItem(AUTO_STATE_STORAGE_KEY);
+            if (!raw) return false;
+            const payload = JSON.parse(raw);
+            return applyLoadedPayload(payload, 'ローカル自動復元完了');
+        } catch (err) {
+            console.warn('restoreAutoState failed', err);
+            return false;
+        }
+    }
+
+    async function restoreCloudStateIfNeeded() {
+        if (state.shippingData.length > 0 || state.salesData.length > 0 || state.productData.length > 0) return false;
+        if (!window.KaientaiCloud || typeof window.KaientaiCloud.loadModuleState !== 'function') return false;
+        if (!(window.KaientaiCloud.isReady && window.KaientaiCloud.isReady())) return false;
+        try {
+            const payload = await window.KaientaiCloud.loadModuleState(MODULE_ID);
+            if (!payload) return false;
+            const ok = applyLoadedPayload(payload, 'クラウド自動復元完了');
+            if (ok) saveAutoStateNow();
+            return ok;
+        } catch (err) {
+            console.warn('restoreCloudStateIfNeeded failed', err);
+            return false;
+        }
     }
 
     // ── Settings ──
@@ -455,18 +609,15 @@
 
         document.getElementById(pfx('status-shipping')).textContent = `✓ ${state.shippingData.length}件`;
         document.getElementById(pfx('card-shipping')).classList.add('loaded');
+        resetAnalysisOutputs('送料更新（再分析待ち）');
+        scheduleAutoStateSave();
     }
 
     function loadSales(parsedList) {
-        const makeOrderKey = (orderNo, month, store, jan, qty, unitPrice) => {
-            if (!orderNo) return '';
-            return [orderNo, month || '', store || '', jan || '', qty, unitPrice].join('|');
-        };
+        const normalizeOrderNo = (orderNo) => toStr(orderNo).trim();
         const makerValues = new Set(state.salesData.map(s => s.makerRaw).filter(Boolean));
         const monthValues = new Set(state.salesData.map(s => s.month).filter(Boolean));
-        const seenOrderKeys = new Set(state.salesData
-            .map(s => makeOrderKey(s.orderNo, s.month, s.store, s.jan, s.qty, s.unitPrice))
-            .filter(Boolean));
+        const seenOrderNos = new Set(state.salesData.map(s => normalizeOrderNo(s.orderNo)).filter(Boolean));
         let duplicateOrderCount = 0;
         let addedCount = 0;
 
@@ -491,7 +642,7 @@
                     const row = rows[i] || [];
                     const jan = toStr(row[COL.H]);
                     if (!jan) continue;
-                    const orderNo = toStr(row[COL.A]);
+                    const orderNo = normalizeOrderNo(row[COL.A]);
 
                     // B列の受注日から月を判定（最優先）
                     const rawDate = row[COL.B];
@@ -513,12 +664,11 @@
                     const store = toStr(row[COL.D]);
                     const qty = toNum(row[COL.K]);
                     const unitPrice = toNum(row[COL.L]);
-                    const orderKey = makeOrderKey(orderNo, month, store, jan, qty, unitPrice);
-                    if (orderKey && seenOrderKeys.has(orderKey)) {
+                    if (orderNo && seenOrderNos.has(orderNo)) {
                         duplicateOrderCount++;
                         continue;
                     }
-                    if (orderKey) seenOrderKeys.add(orderKey);
+                    if (orderNo) seenOrderNos.add(orderNo);
                     const salesRep = toStr(row[COL_SALES_REP]);
                     state.salesData.push({
                         orderNo,
@@ -552,6 +702,8 @@
         document.getElementById(pfx('status-sales')).textContent = `✓ ${state.salesData.length}件 (+${addedCount}件 / ${parsedList.length}ファイル)`;
         document.getElementById(pfx('card-sales')).classList.add('loaded');
         renderMonthlyRebateInputs();
+        resetAnalysisOutputs('販売実績更新（再分析待ち）');
+        scheduleAutoStateSave();
     }
 
     function loadProduct(parsedList) {
@@ -604,6 +756,8 @@
 
         document.getElementById(pfx('status-product')).textContent = `Loaded: ${state.productData.length} (${files.length} files)`;
         document.getElementById(pfx('card-product')).classList.add('loaded');
+        resetAnalysisOutputs('商品マスタ更新（再分析待ち）');
+        scheduleAutoStateSave();
     }
 
     // ── Analysis ──
@@ -1341,9 +1495,16 @@
 
     function checkAllLoaded() {
         const ok = state.shippingData.length > 0 && state.salesData.length > 0 && state.productData.length > 0;
-        document.getElementById(pfx('btn-analyze')).disabled = !ok;
-        const cloudSaveBtn = document.getElementById(pfx('btn-cloud-save'));
-        if (cloudSaveBtn) cloudSaveBtn.disabled = !ok;
+        const analyzeBtn = document.getElementById(pfx('btn-analyze'));
+        if (analyzeBtn) analyzeBtn.disabled = !ok;
+        const shippingInput = document.getElementById(pfx('file-shipping'));
+        if (shippingInput) shippingInput.disabled = state.shippingData.length > 0;
+        const productInput = document.getElementById(pfx('file-product'));
+        if (productInput) productInput.disabled = state.productData.length > 0;
+        const clearShippingBtn = document.getElementById(pfx('btn-shipping-clear'));
+        if (clearShippingBtn) clearShippingBtn.disabled = state.shippingData.length === 0;
+        const clearProductBtn = document.getElementById(pfx('btn-product-clear'));
+        if (clearProductBtn) clearProductBtn.disabled = state.productData.length === 0;
     }
 
     function setInputValue(id, value) {
@@ -1525,6 +1686,8 @@
                     <p>A列:JAN / B列:商品名 / I列:サイズ帯 / J〜V列:エリア別送料（W列は未使用）</p>
                     <label class="upload-btn">ファイル選択<input type="file" accept=".xlsx,.xls,.csv" id="${pfx('file-shipping')}" hidden></label>
                     <div class="upload-status" id="${pfx('status-shipping')}">未読込</div>
+                    <div class="upload-hint">送料マスタは1セット固定。差し替え時は解除ボタンを使用。</div>
+                    <div class="action-bar"><button class="btn-secondary" id="${pfx('btn-shipping-clear')}" disabled>送料データ解除</button></div>
                 </div>
                 <div class="upload-card" id="${pfx('card-sales')}">
                     <div class="upload-icon">&#128200;</div>
@@ -1540,13 +1703,12 @@
                     <p>A列:JAN / D列:商品名 / H列:定価 / M列:原価 / O列:倉庫入原価</p>
                     <label class="upload-btn">ファイル選択<input type="file" accept=".xlsx,.xls,.csv" id="${pfx('file-product')}" hidden multiple></label>
                     <div class="upload-status" id="${pfx('status-product')}">未読込</div>
+                    <div class="upload-hint">追加取込は不可。追加前に商品マスタをクリア。</div>
+                    <div class="action-bar"><button class="btn-secondary" id="${pfx('btn-product-clear')}" disabled>商品マスタクリア</button></div>
                 </div>
             </div>
             <div class="action-bar">
                 <button class="btn-primary" id="${pfx('btn-analyze')}" disabled>分析開始</button>
-                <button class="btn-secondary" id="${pfx('btn-cloud-load')}">Cloud Load</button>
-                <button class="btn-secondary" id="${pfx('btn-cloud-save')}" disabled>Cloud Save</button>
-                <button class="btn-secondary" id="${pfx('btn-clear')}">データクリア</button>
             </div>
             <div id="${pfx('load-log')}" class="load-log" style="display:none;">
                 <h3>読込ログ</h3>
@@ -1685,7 +1847,12 @@
         // File uploads
         document.getElementById(pfx('file-shipping')).addEventListener('change', async (e) => {
             if (!e.target.files.length) return;
-            try { loadShipping(await parseExcel(e.target.files[0])); checkAllLoaded(); }
+            if (state.shippingData.length > 0) {
+                alert('送料マスタは1セット固定です。先に「送料データ解除」を実行してください。');
+                e.target.value = '';
+                return;
+            }
+            try { loadShipping(await parseExcel(e.target.files[0])); checkAllLoaded(); e.target.value = ''; }
             catch (err) { log('送料マスタ読込エラー: ' + err.message); alert('送料マスタの読込に失敗しました'); }
         });
         document.getElementById(pfx('file-sales')).addEventListener('change', async (e) => {
@@ -1694,45 +1861,70 @@
                 const list = [];
                 for (const f of Array.from(e.target.files)) list.push(await parseExcel(f));
                 loadSales(list); checkAllLoaded();
+                e.target.value = '';
             } catch (err) { log('販売実績読込エラー: ' + err.message); alert('販売実績の読込に失敗しました'); }
         });
         document.getElementById(pfx('file-product')).addEventListener('change', async (e) => {
             if (!e.target.files.length) return;
+            if (state.productData.length > 0) {
+                alert('商品マスタ追加はできません。先に「商品マスタクリア」を実行してください。');
+                e.target.value = '';
+                return;
+            }
             try {
                 const list = [];
                 for (const f of Array.from(e.target.files)) list.push(await parseExcel(f));
                 loadProduct(list); checkAllLoaded();
+                e.target.value = '';
             }
             catch (err) { log('商品マスタ読込エラー: ' + err.message); alert('商品マスタの読込に失敗しました'); }
         });
 
         document.getElementById(pfx('btn-analyze')).addEventListener('click', analyze);
-        document.getElementById(pfx('btn-cloud-load')).addEventListener('click', loadCloudState);
-        document.getElementById(pfx('btn-cloud-save')).addEventListener('click', saveCloudState);
+        document.getElementById(pfx('btn-shipping-clear')).addEventListener('click', () => {
+            if (state.shippingData.length === 0) return;
+            state.shippingData = [];
+            resetAnalysisOutputs('送料解除（再分析待ち）');
+            updateUploadCardsByState();
+            checkAllLoaded();
+            const shippingInput = document.getElementById(pfx('file-shipping'));
+            if (shippingInput) shippingInput.value = '';
+            scheduleAutoStateSave();
+        });
+        document.getElementById(pfx('btn-product-clear')).addEventListener('click', () => {
+            if (state.productData.length === 0) return;
+            state.productData = [];
+            resetAnalysisOutputs('商品マスタクリア（再分析待ち）');
+            updateUploadCardsByState();
+            checkAllLoaded();
+            const productInput = document.getElementById(pfx('file-product'));
+            if (productInput) productInput.value = '';
+            scheduleAutoStateSave();
+        });
         document.getElementById(pfx('btn-recalc')).addEventListener('click', () => {
             if (state.salesData.length === 0) { alert('データを先に読み込んでください。'); return; }
             analyze();
         });
-        document.getElementById(pfx('btn-clear')).addEventListener('click', () => {
-            state.shippingData = []; state.salesData = []; state.productData = []; state.results = null; logLines = [];
-            state.storeBaseCache = {}; state.storeViewRuntime = null;
-            state.storeCurrentPage = 1; state.storeCurrentPageTotal = 1;
-            container.querySelectorAll('.upload-card').forEach(el => el.classList.remove('loaded'));
-            container.querySelectorAll('.upload-status').forEach(el => el.textContent = '未読込');
-            container.querySelectorAll('input[type="file"]').forEach(el => el.value = '');
-            document.getElementById(pfx('load-log')).style.display = 'none';
-            document.getElementById(pfx('btn-analyze')).disabled = true;
-            document.getElementById(pfx('btn-cloud-save')).disabled = true;
-            KaientaiM.updateModuleStatus(MODULE_ID, '未設定', false);
-            renderMonthlyRebateInputs();
-            ['overview', 'monthly', 'store', 'sim', 'details'].forEach(id => {
-                const emp = document.getElementById(pfx(id + '-empty'));
-                const con = document.getElementById(pfx(id + '-content'));
-                if (emp) emp.style.display = '';
-                if (con) con.style.display = 'none';
-            });
-            Object.keys(state.charts).forEach(k => destroyChart(state.charts, k));
-        });
+
+        const settingsTabEl = document.getElementById(pfx('tab-settings'));
+        if (settingsTabEl) {
+            const onSettingsChanged = (e) => {
+                const target = e.target;
+                if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement)) return;
+                scheduleAutoStateSave(500);
+            };
+            settingsTabEl.addEventListener('input', onSettingsChanged);
+            settingsTabEl.addEventListener('change', onSettingsChanged);
+        }
+        const onProgressChanged = (e) => {
+            const target = e.target;
+            if (!(target instanceof HTMLElement)) return;
+            if (!target.id || !target.id.startsWith(pfx('progress-'))) return;
+            if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement)) return;
+            scheduleAutoStateSave(500);
+        };
+        container.addEventListener('input', onProgressChanged);
+        container.addEventListener('change', onProgressChanged);
 
         // Filters
         document.getElementById(pfx('monthly-maker')).addEventListener('change', renderMonthly);
@@ -1783,6 +1975,9 @@
             buildHTML(container);
             bindEvents(container);
             renderMonthlyRebateInputs();
+            const restoredLocal = restoreAutoState();
+            if (!restoredLocal) restoreCloudStateIfNeeded();
+            checkAllLoaded();
         },
         onShow() {
             if (state.results && currentTab !== 'upload' && currentTab !== 'settings') {
