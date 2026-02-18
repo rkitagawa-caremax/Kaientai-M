@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kaientai-M</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+    <link rel="stylesheet" href="core/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <span class="logo-icon">&#9876;</span>
+                <div>
+                    <h1 class="logo-text">Kaientai-M</h1>
+                    <span class="logo-sub">Marketing Platform</span>
+                </div>
+            </div>
+            <nav class="sidebar-nav" id="sidebar-nav">
+                <button class="sidebar-btn active" data-page="home">
+                    <span class="sidebar-icon">&#127968;</span>
+                    <span>ホーム</span>
+                </button>
+                <!-- Module nav items injected here by core.js -->
+            </nav>
+            <div class="sidebar-footer">
+                <span class="version">v1.0.0</span>
+            </div>
+        </aside>
+
+        <!-- Main -->
+        <main class="main" id="main">
+            <!-- Home Page -->
+            <div class="page active" id="page-home">
+                <div class="page-header">
+                    <h2>分析モジュール</h2>
+                    <p class="page-desc">分析したいモジュールを選択してください。新しいモジュールは随時追加されます。</p>
+                </div>
+                <div class="module-grid" id="module-grid">
+                    <!-- Module cards injected here by core.js -->
+                </div>
+            </div>
+            <!-- Module pages injected here by core.js -->
+        </main>
+    </div>
+
+    <script src="core/firebase.js"></script>
+    <script src="core/core.js"></script>
+    <!-- Modules auto-register themselves -->
+    <script src="modules/aron-pana/module.js"></script>
+    <!-- Add new modules here: -->
+    <!-- <script src="modules/new-module/module.js"></script> -->
+</body>
+</html>
