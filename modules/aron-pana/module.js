@@ -17,23 +17,30 @@
         shippingData: [],
         salesData: [],
         productData: [],
+        progressItems: [],
+        progressSeq: 1,
         results: null,
         charts: {},
         storeBaseCache: {},
         storeViewRuntime: null,
+        storeDetailRuntime: null,
         storeCurrentPage: 1,
         storeCurrentPageTotal: 1
     };
 
     let logLines = [];
-    let currentTab = 'upload';
+    let currentTab = 'overview';
     const AUTO_STATE_STORAGE_KEY = 'kaientai-aron-pana-autostate-v1';
+    const TAB_UNLOCK_PASSWORD = 'ogura';
     let autoPersistTimer = null;
     let cloudPersistTimer = null;
     let cloudPersistInFlight = false;
     let cloudPersistPending = false;
+    let uploadUnlocked = false;
+    let settingsUnlocked = false;
 
     function pfx(id) { return MODULE_ID + '-' + id; }
+    const COL_STORE_CODE = COL.C; // C列（仕入先コード）
     const COL_AB = 27; // AB列（都道府県）
     const COL_SALES_REP = COL.Z; // Z列（営業担当）
     const SHIPPING_AREA_COLS = [COL.J, COL.K, COL.L, COL.M, COL.N, COL.O, COL.P, COL.Q, COL.R, COL.S, COL.T, COL.U, COL.V];
@@ -196,11 +203,12 @@
         state.results = null;
         state.storeBaseCache = {};
         state.storeViewRuntime = null;
+        state.storeDetailRuntime = null;
         state.storeCurrentPage = 1;
         state.storeCurrentPageTotal = 1;
 
         Object.keys(state.charts).forEach(k => destroyChart(state.charts, k));
-        ['overview', 'monthly', 'store', 'sim', 'details'].forEach(id => {
+        ['overview', 'monthly', 'store', 'store-detail', 'sim', 'details'].forEach(id => {
             const emp = document.getElementById(pfx(id + '-empty'));
             const con = document.getElementById(pfx(id + '-content'));
             if (emp) emp.style.display = '';
@@ -231,6 +239,83 @@
         });
     }
 
+    function normalizeProgressItem(item, fallbackId) {
+        const idNum = Number(item?.id);
+        return {
+            id: Number.isFinite(idNum) && idNum > 0 ? idNum : fallbackId,
+            rep: toStr(item?.rep),
+            customer: toStr(item?.customer),
+            actionPlan: toStr(item?.actionPlan),
+            result: toStr(item?.result),
+            status: toStr(item?.status) || 'planned',
+            updatedAt: toStr(item?.updatedAt) || new Date().toISOString()
+        };
+    }
+
+    function ensureProgressSeq() {
+        let maxId = 0;
+        for (const item of state.progressItems) {
+            const idNum = Number(item?.id);
+            if (Number.isFinite(idNum) && idNum > maxId) maxId = idNum;
+        }
+        state.progressSeq = Math.max(1, maxId + 1);
+    }
+
+    function applyTabLockState() {
+        const uploadLockText = document.getElementById(pfx('upload-lock-state'));
+        if (uploadLockText) {
+            uploadLockText.textContent = uploadUnlocked
+                ? '解除済み: データ読込を実行できます'
+                : 'ロック中: 読込実行にはパスワードが必要です';
+        }
+        const settingsLockText = document.getElementById(pfx('settings-lock-state'));
+        if (settingsLockText) {
+            settingsLockText.textContent = settingsUnlocked
+                ? '解除済み: 設定を編集できます'
+                : 'ロック中: 設定編集にはパスワードが必要です';
+        }
+
+        const settingsTab = document.getElementById(pfx('tab-settings'));
+        if (settingsTab) {
+            settingsTab.querySelectorAll('input, select, textarea, button').forEach(el => {
+                const id = el.id || '';
+                if (id === pfx('btn-settings-unlock')) return;
+                if (id === pfx('btn-recalc')) {
+                    el.disabled = !settingsUnlocked || state.salesData.length === 0;
+                    return;
+                }
+                el.disabled = !settingsUnlocked;
+            });
+        }
+
+        checkAllLoaded();
+    }
+
+    function unlockTabGroup(target) {
+        const isUpload = target === 'upload';
+        const already = isUpload ? uploadUnlocked : settingsUnlocked;
+        if (already) return true;
+        const label = isUpload ? 'データ読込' : '設定編集';
+        const input = window.prompt(`${label}を解除するパスワードを入力してください`);
+        if (input === null) return false;
+        if (input !== TAB_UNLOCK_PASSWORD) {
+            alert('パスワードが違います');
+            return false;
+        }
+        if (isUpload) uploadUnlocked = true;
+        else settingsUnlocked = true;
+        applyTabLockState();
+        return true;
+    }
+
+    function ensureUploadUnlocked() {
+        return uploadUnlocked || unlockTabGroup('upload');
+    }
+
+    function ensureSettingsUnlocked() {
+        return settingsUnlocked || unlockTabGroup('settings');
+    }
+
     function buildAutoStatePayload() {
         return {
             schemaVersion: 2,
@@ -238,6 +323,8 @@
             shippingData: state.shippingData,
             salesData: state.salesData,
             productData: state.productData,
+            progressItems: state.progressItems,
+            progressSeq: state.progressSeq,
             settings: getSettings(),
             progressDraft: readProgressDraftInputs()
         };
@@ -304,9 +391,15 @@
         state.shippingData = payload.shippingData;
         state.salesData = payload.salesData;
         state.productData = payload.productData;
+        state.progressItems = Array.isArray(payload.progressItems)
+            ? payload.progressItems.map((item, idx) => normalizeProgressItem(item, idx + 1))
+            : [];
+        state.progressSeq = toNum(payload.progressSeq) || 1;
+        ensureProgressSeq();
         resetAnalysisOutputs('データ復元済（再分析待ち）');
         restoreSavedSettings(payload.settings || {});
         applyProgressDraftInputs(payload.progressDraft || {});
+        renderProgressTable();
         updateUploadCardsByState();
         checkAllLoaded();
         if (sourceLabel) log(sourceLabel);
@@ -631,7 +724,7 @@
                 // 先頭3行ダンプ（主要列を表示）
                 for (let i = 0; i < Math.min(rows.length, 3); i++) {
                     const r = rows[i] || [];
-                    log(`    行${i}: A=[${toStr(r[COL.A])}] B=[${toStr(r[COL.B])}] D=[${toStr(r[COL.D])}] H=[${toStr(r[COL.H])}] I=[${toStr(r[COL.I])}] K=[${toStr(r[COL.K])}] L=[${toStr(r[COL.L])}] S=[${toStr(r[COL.S])}] Z=[${toStr(r[COL_SALES_REP])}] AB=[${toStr(r[COL_AB])}]`);
+                    log(`    行${i}: A=[${toStr(r[COL.A])}] C=[${toStr(r[COL_STORE_CODE])}] B=[${toStr(r[COL.B])}] D=[${toStr(r[COL.D])}] H=[${toStr(r[COL.H])}] I=[${toStr(r[COL.I])}] K=[${toStr(r[COL.K])}] L=[${toStr(r[COL.L])}] S=[${toStr(r[COL.S])}] Z=[${toStr(r[COL_SALES_REP])}] AB=[${toStr(r[COL_AB])}]`);
                 }
 
                 const headerRow = findHeaderRow(rows, ['jan', 'janコード', '商品', 'コード', '品番', '数量', '販売', '受注']);
@@ -662,6 +755,7 @@
 
                     const name = toStr(row[COL.I]);
                     const store = toStr(row[COL.D]);
+                    const storeCode = toStr(row[COL_STORE_CODE]);
                     const qty = toNum(row[COL.K]);
                     const unitPrice = toNum(row[COL.L]);
                     if (orderNo && seenOrderNos.has(orderNo)) {
@@ -677,6 +771,7 @@
                         makerRaw,
                         salesRep,
                         store,
+                        storeCode,
                         prefecture: toStr(row[COL_AB]),
                         jan, name,
                         qty,
@@ -1118,6 +1213,7 @@
                     store: key,
                     sales: 0, cost: 0, shipping: 0, gross: 0, qty: 0,
                     reps: new Set(),
+                    codes: new Set(),
                     aronRateNumerator: 0, aronRateDenominator: 0,
                     panaRateNumerator: 0, panaRateDenominator: 0
                 };
@@ -1128,6 +1224,7 @@
             sMap[key].gross += rec.grossProfit;
             sMap[key].qty += rec.qty;
             if (rec.salesRep) sMap[key].reps.add(rec.salesRep);
+            if (rec.storeCode) sMap[key].codes.add(rec.storeCode);
             if (rec.listPrice > 0 && rec.qty > 0) {
                 if (rec.maker === 'aron') {
                     sMap[key].aronRateNumerator += rec.unitPrice * rec.qty;
@@ -1140,8 +1237,10 @@
         }
         return Object.values(sMap).map(e => {
             const repNames = [...e.reps].sort((a, b) => a.localeCompare(b, 'ja'));
+            const codes = [...e.codes].sort((a, b) => a.localeCompare(b, 'ja'));
             return {
                 store: e.store,
+                storeCode: codes.join(' / '),
                 salesRep: repNames.join(' / ') || '(未設定)',
                 sales: e.sales,
                 cost: e.cost,
@@ -1170,6 +1269,8 @@
             case 'pana-rate-asc': entries.sort((a, b) => a.panaRate - b.panaRate); break;
             case 'rep-asc': entries.sort((a, b) => a.salesRep.localeCompare(b.salesRep, 'ja')); break;
             case 'rep-desc': entries.sort((a, b) => b.salesRep.localeCompare(a.salesRep, 'ja')); break;
+            case 'code-asc': entries.sort((a, b) => a.storeCode.localeCompare(b.storeCode, 'ja')); break;
+            case 'code-desc': entries.sort((a, b) => b.storeCode.localeCompare(a.storeCode, 'ja')); break;
             case 'store-asc': entries.sort((a, b) => a.store.localeCompare(b.store, 'ja')); break;
             case 'store-desc': entries.sort((a, b) => b.store.localeCompare(a.store, 'ja')); break;
             case 'gross-desc':
@@ -1334,7 +1435,7 @@
         const displayed = entries.slice(startIndex, startIndex + pageSize);
         const tbody = document.getElementById(pfx('store-tbody'));
         tbody.innerHTML = displayed.map(e =>
-            `<tr><td>${e.store}</td><td>${e.salesRep}</td><td>${e.aronRate > 0 ? fmtPct(e.aronRate) : '-'}</td><td>${e.panaRate > 0 ? fmtPct(e.panaRate) : '-'}</td><td>${fmtYen(e.sales)}</td><td>${fmtYen(e.cost)}</td><td>${fmtYen(e.shipping)}</td><td class="${e.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(e.gross)}</td><td>${fmtPct(e.rate)}</td><td>${fmt(e.qty)}</td></tr>`
+            `<tr><td>${e.store}</td><td>${e.storeCode || '-'}</td><td>${e.salesRep}</td><td>${e.aronRate > 0 ? fmtPct(e.aronRate) : '-'}</td><td>${e.panaRate > 0 ? fmtPct(e.panaRate) : '-'}</td><td>${fmtYen(e.sales)}</td><td>${fmtYen(e.cost)}</td><td>${fmtYen(e.shipping)}</td><td class="${e.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(e.gross)}</td><td>${fmtPct(e.rate)}</td><td>${fmt(e.qty)}</td></tr>`
         ).join('');
 
         const summaryEl = document.getElementById(pfx('store-summary'));
@@ -1399,40 +1500,318 @@
 
         const rateChange = toNum(document.getElementById(pfx('sim-rate')).value) / 100;
         const target = document.getElementById(pfx('sim-target')).value;
+        const rebateRateDeltaAron = toNum(document.getElementById(pfx('sim-rebate-aron')).value) / 100;
+        const rebateRateDeltaPana = toNum(document.getElementById(pfx('sim-rebate-pana')).value) / 100;
+        const fixedDeltaAron = toNum(document.getElementById(pfx('sim-fixed-aron')).value);
+        const fixedDeltaPana = toNum(document.getElementById(pfx('sim-fixed-pana')).value);
         document.getElementById(pfx('sim-rate-display')).textContent = (rateChange >= 0 ? '+' : '') + (rateChange * 100).toFixed(1) + '%';
 
-        let beforeG = 0, afterG = 0;
-        for (const rec of r.records) {
-            beforeG += rec.grossProfit;
-            if (target === 'all' || rec.maker === target) {
-                afterG += rec.unitPrice * (1 + rateChange) * rec.qty - rec.totalCost - rec.totalShipping;
-            } else {
-                afterG += rec.grossProfit;
+        const monthMakerBase = {};
+        Object.values(r.monthlyAgg).forEach(e => {
+            monthMakerBase[e.month + '|' + e.maker] = { month: e.month, maker: e.maker, sales: e.sales, gross: e.gross, qty: e.qty };
+        });
+
+        const calcScenario = (rate) => {
+            let gross = 0;
+            const monthMaker = {};
+            for (const rec of r.records) {
+                const applyChange = target === 'all' || rec.maker === target;
+                const newUnitPrice = applyChange ? rec.unitPrice * (1 + rate) : rec.unitPrice;
+                const newSales = rec.qty * newUnitPrice;
+                const newGross = newSales - rec.totalCost - rec.totalShipping;
+                gross += newGross;
+
+                const mk = rec.month + '|' + rec.maker;
+                if (!monthMaker[mk]) monthMaker[mk] = { month: rec.month, maker: rec.maker, sales: 0, gross: 0, qty: 0 };
+                monthMaker[mk].sales += newSales;
+                monthMaker[mk].gross += newGross;
+                monthMaker[mk].qty += rec.qty;
             }
-        }
-        const diff = afterG - beforeG;
-        document.getElementById(pfx('sim-before')).textContent = fmtYen(beforeG);
-        document.getElementById(pfx('sim-after')).textContent = fmtYen(afterG);
-        document.getElementById(pfx('sim-after')).className = 'sim-value ' + (afterG >= 0 ? 'positive' : 'negative');
+
+            Object.keys(monthMakerBase).forEach(mk => {
+                if (!monthMaker[mk]) {
+                    const base = monthMakerBase[mk];
+                    monthMaker[mk] = { month: base.month, maker: base.maker, sales: 0, gross: 0, qty: 0 };
+                }
+            });
+
+            const monthSalesTotals = {};
+            Object.values(monthMaker).forEach(e => {
+                monthSalesTotals[e.month] = (monthSalesTotals[e.month] || 0) + e.sales;
+            });
+
+            let rebate = 0;
+            let minus = 0;
+            for (const e of Object.values(monthMaker)) {
+                const baseRate = e.maker === 'aron' ? r.settings.rebateAron : e.maker === 'pana' ? r.settings.rebatePana : 0;
+                const rateDelta = e.maker === 'aron' ? rebateRateDeltaAron : e.maker === 'pana' ? rebateRateDeltaPana : 0;
+                const variable = e.sales * (baseRate + rateDelta);
+
+                const fixed = getMonthlyRebate(r.settings, e.month, e.maker);
+                const fixedDelta = e.maker === 'aron' ? fixedDeltaAron : e.maker === 'pana' ? fixedDeltaPana : 0;
+                const fixedTotal = fixed.fixed + fixedDelta;
+
+                rebate += variable + fixedTotal;
+                minus += calcMonthlyMinus(e, r.settings, monthSalesTotals).total;
+            }
+            return { gross, rebate, minus, real: gross + rebate - minus };
+        };
+
+        const before = { gross: r.totalGross, rebate: r.totalRebate, minus: r.totalMinus, real: r.realProfit };
+        const after = calcScenario(rateChange);
+        const diff = after.real - before.real;
+
+        document.getElementById(pfx('sim-before')).textContent = fmtYen(before.real);
+        document.getElementById(pfx('sim-after')).textContent = fmtYen(after.real);
+        document.getElementById(pfx('sim-after')).className = 'sim-value ' + (after.real >= 0 ? 'positive' : 'negative');
         document.getElementById(pfx('sim-diff')).textContent = (diff >= 0 ? '+' : '') + fmtYen(diff);
         document.getElementById(pfx('sim-diff')).className = 'sim-value ' + (diff >= 0 ? 'positive' : 'negative');
+
+        const breakdownBody = document.getElementById(pfx('sim-breakdown-body'));
+        if (breakdownBody) {
+            const rows = [
+                { label: '商品粗利', before: before.gross, after: after.gross },
+                { label: 'リベート', before: before.rebate, after: after.rebate },
+                { label: 'マイナス要件', before: before.minus, after: after.minus },
+                { label: '実利益', before: before.real, after: after.real }
+            ];
+            breakdownBody.innerHTML = rows.map(row => {
+                const delta = row.after - row.before;
+                const cls = delta >= 0 ? 'positive' : 'negative';
+                return `<tr><td>${row.label}</td><td>${fmtYen(row.before)}</td><td>${fmtYen(row.after)}</td><td class="${cls}">${delta >= 0 ? '+' : ''}${fmtYen(delta)}</td></tr>`;
+            }).join('');
+        }
 
         const steps = [], gv = [];
         for (let pct = -20; pct <= 20; pct += 2) {
             steps.push((pct >= 0 ? '+' : '') + pct + '%');
-            let g = 0;
-            for (const rec of r.records) {
-                if (target === 'all' || rec.maker === target) g += rec.unitPrice * (1 + pct / 100) * rec.qty - rec.totalCost - rec.totalShipping;
-                else g += rec.grossProfit;
-            }
-            gv.push(g);
+            gv.push(calcScenario(pct / 100).real);
         }
         destroyChart(state.charts, 'simulation');
         state.charts['simulation'] = new Chart(document.getElementById(pfx('chart-sim')), {
             type: 'line',
-            data: { labels: steps, datasets: [{ label: '粗利', data: gv, borderColor: '#ffa726', backgroundColor: 'rgba(255,167,38,0.1)', fill: true, tension: 0.3, borderWidth: 3, pointRadius: 4, pointBackgroundColor: gv.map(v => v >= 0 ? '#66bb6a' : '#ef5350') }] },
+            data: { labels: steps, datasets: [{ label: '実利益', data: gv, borderColor: '#ffa726', backgroundColor: 'rgba(255,167,38,0.1)', fill: true, tension: 0.3, borderWidth: 3, pointRadius: 4, pointBackgroundColor: gv.map(v => v >= 0 ? '#66bb6a' : '#ef5350') }] },
             options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { ticks: { callback: v => '¥' + fmt(v) } } } }
         });
+    }
+
+    function buildStoreDetailMap() {
+        const r = state.results;
+        const map = {};
+        for (const rec of r.records) {
+            const key = rec.store || '(不明)';
+            if (!map[key]) {
+                map[key] = {
+                    store: key,
+                    codes: new Set(),
+                    reps: new Set(),
+                    records: [],
+                    sales: 0
+                };
+            }
+            if (rec.storeCode) map[key].codes.add(rec.storeCode);
+            if (rec.salesRep) map[key].reps.add(rec.salesRep);
+            map[key].records.push(rec);
+            map[key].sales += rec.salesAmount;
+        }
+        return Object.values(map).map(item => ({
+            store: item.store,
+            codeText: [...item.codes].sort((a, b) => a.localeCompare(b, 'ja')).join(' / '),
+            repText: [...item.reps].sort((a, b) => a.localeCompare(b, 'ja')).join(' / '),
+            records: item.records,
+            sales: item.sales
+        })).sort((a, b) => b.sales - a.sales);
+    }
+
+    function renderStoreDetail() {
+        const r = state.results; if (!r) return;
+        document.getElementById(pfx('store-detail-empty')).style.display = 'none';
+        document.getElementById(pfx('store-detail-content')).style.display = 'block';
+
+        const searchInput = document.getElementById(pfx('store-detail-search'));
+        const selectEl = document.getElementById(pfx('store-detail-select'));
+        const summaryEl = document.getElementById(pfx('store-detail-summary'));
+        const tbody = document.getElementById(pfx('store-detail-tbody'));
+        const maker = document.getElementById(pfx('store-detail-maker')).value;
+        const rateChange = toNum(document.getElementById(pfx('store-detail-rate')).value) / 100;
+        const qtyIncrease = Math.max(0, toNum(document.getElementById(pfx('store-detail-qty')).value));
+        const q = toStr(searchInput.value).toLowerCase();
+
+        const stores = buildStoreDetailMap();
+        const filtered = stores.filter(item => {
+            if (!q) return true;
+            return item.store.toLowerCase().includes(q) || item.codeText.toLowerCase().includes(q);
+        });
+
+        const prev = selectEl.value;
+        selectEl.innerHTML = filtered.map(item => `<option value="${item.store}">${item.store}${item.codeText ? ` [${item.codeText}]` : ''}</option>`).join('');
+        if (filtered.length === 0) {
+            selectEl.innerHTML = '<option value="">該当なし</option>';
+        }
+        selectEl.value = filtered.some(item => item.store === prev) ? prev : (filtered[0]?.store || '');
+
+        const selected = filtered.find(item => item.store === selectEl.value);
+        if (!selected) {
+            summaryEl.textContent = '販売店が見つかりません';
+            tbody.innerHTML = '<tr><td colspan="8">対象データがありません</td></tr>';
+            return;
+        }
+
+        summaryEl.textContent = `仕入先コード: ${selected.codeText || '-'} / 営業担当: ${selected.repText || '(未設定)'} / 明細: ${fmt(selected.records.length)}件`;
+
+        const targetRecords = selected.records.filter(rec => maker === 'all' || rec.maker === maker);
+        const targetQtyBase = targetRecords.reduce((sum, rec) => sum + rec.qty, 0);
+        const targetCount = targetRecords.length;
+        const before = { sales: 0, gross: 0, qty: 0, aronNum: 0, aronDen: 0, panaNum: 0, panaDen: 0 };
+        const after = { sales: 0, gross: 0, qty: 0, aronNum: 0, aronDen: 0, panaNum: 0, panaDen: 0 };
+
+        for (const rec of selected.records) {
+            before.sales += rec.salesAmount;
+            before.gross += rec.grossProfit;
+            before.qty += rec.qty;
+            if (rec.listPrice > 0 && rec.qty > 0) {
+                if (rec.maker === 'aron') { before.aronNum += rec.unitPrice * rec.qty; before.aronDen += rec.listPrice * rec.qty; }
+                if (rec.maker === 'pana') { before.panaNum += rec.unitPrice * rec.qty; before.panaDen += rec.listPrice * rec.qty; }
+            }
+
+            const apply = maker === 'all' || rec.maker === maker;
+            let addQty = 0;
+            if (apply && qtyIncrease > 0) {
+                if (targetQtyBase > 0) addQty = qtyIncrease * (rec.qty / targetQtyBase);
+                else if (targetCount > 0) addQty = qtyIncrease / targetCount;
+            }
+            const newQty = rec.qty + addQty;
+            const newUnitPrice = apply ? rec.unitPrice * (1 + rateChange) : rec.unitPrice;
+            const newSales = newQty * newUnitPrice;
+            const newGross = newSales - newQty * rec.effectiveCost - newQty * rec.shippingCost;
+
+            after.sales += newSales;
+            after.gross += newGross;
+            after.qty += newQty;
+            if (rec.listPrice > 0 && newQty > 0) {
+                if (rec.maker === 'aron') { after.aronNum += newUnitPrice * newQty; after.aronDen += rec.listPrice * newQty; }
+                if (rec.maker === 'pana') { after.panaNum += newUnitPrice * newQty; after.panaDen += rec.listPrice * newQty; }
+            }
+        }
+
+        const beforeRate = before.sales > 0 ? before.gross / before.sales : 0;
+        const afterRate = after.sales > 0 ? after.gross / after.sales : 0;
+        const beforeAronRate = before.aronDen > 0 ? before.aronNum / before.aronDen : 0;
+        const beforePanaRate = before.panaDen > 0 ? before.panaNum / before.panaDen : 0;
+        const afterAronRate = after.aronDen > 0 ? after.aronNum / after.aronDen : 0;
+        const afterPanaRate = after.panaDen > 0 ? after.panaNum / after.panaDen : 0;
+
+        const fmtQty = (n) => (n == null || isNaN(n)) ? '-' : (Math.round(n * 10) / 10).toLocaleString('ja-JP');
+        const signedYen = (n) => (n >= 0 ? '+' : '') + fmtYen(n);
+        const signedPct = (n) => (n >= 0 ? '+' : '') + fmtPct(n);
+        tbody.innerHTML = [
+            `<tr><td>現状</td><td>${fmtYen(before.sales)}</td><td class="${before.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(before.gross)}</td><td>${fmtPct(beforeRate)}</td><td>${fmtQty(before.qty)}</td><td>${beforeAronRate > 0 ? fmtPct(beforeAronRate) : '-'}</td><td>${beforePanaRate > 0 ? fmtPct(beforePanaRate) : '-'}</td><td>-</td></tr>`,
+            `<tr><td>シミュ後</td><td>${fmtYen(after.sales)}</td><td class="${after.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(after.gross)}</td><td>${fmtPct(afterRate)}</td><td>${fmtQty(after.qty)}</td><td>${afterAronRate > 0 ? fmtPct(afterAronRate) : '-'}</td><td>${afterPanaRate > 0 ? fmtPct(afterPanaRate) : '-'}</td><td>-</td></tr>`,
+            `<tr><td>差額</td><td class="${after.sales - before.sales >= 0 ? 'positive' : 'negative'}">${signedYen(after.sales - before.sales)}</td><td class="${after.gross - before.gross >= 0 ? 'positive' : 'negative'}">${signedYen(after.gross - before.gross)}</td><td class="${afterRate - beforeRate >= 0 ? 'positive' : 'negative'}">${signedPct(afterRate - beforeRate)}</td><td class="${after.qty - before.qty >= 0 ? 'positive' : 'negative'}">${after.qty - before.qty >= 0 ? '+' : ''}${fmtQty(after.qty - before.qty)}</td><td class="${afterAronRate - beforeAronRate >= 0 ? 'positive' : 'negative'}">${signedPct(afterAronRate - beforeAronRate)}</td><td class="${afterPanaRate - beforePanaRate >= 0 ? 'positive' : 'negative'}">${signedPct(afterPanaRate - beforePanaRate)}</td><td>${maker === 'all' ? '全メーカー' : maker}</td></tr>`
+        ].join('');
+    }
+
+    function getProgressFormValues() {
+        return {
+            rep: toStr(document.getElementById(pfx('progress-rep')).value),
+            customer: toStr(document.getElementById(pfx('progress-customer')).value),
+            actionPlan: toStr(document.getElementById(pfx('progress-action')).value),
+            result: toStr(document.getElementById(pfx('progress-result')).value),
+            status: toStr(document.getElementById(pfx('progress-status')).value || 'planned')
+        };
+    }
+
+    function clearProgressForm() {
+        setInputValue('progress-edit-id', '');
+        setInputValue('progress-rep', '');
+        setInputValue('progress-customer', '');
+        setInputValue('progress-action', '');
+        setInputValue('progress-result', '');
+        setInputValue('progress-status', 'planned');
+    }
+
+    function renderProgressTable() {
+        const body = document.getElementById(pfx('progress-tbody'));
+        if (!body) return;
+        const repFilterEl = document.getElementById(pfx('progress-filter-rep'));
+        const statusFilter = toStr(document.getElementById(pfx('progress-filter-status'))?.value || 'all');
+        const search = toStr(document.getElementById(pfx('progress-filter-search'))?.value || '').toLowerCase();
+
+        const reps = [...new Set(state.progressItems.map(item => item.rep).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja'));
+        if (repFilterEl) {
+            const prev = repFilterEl.value;
+            repFilterEl.innerHTML = `<option value="all">全担当</option>${reps.map(rep => `<option value="${rep}">${rep}</option>`).join('')}`;
+            repFilterEl.value = reps.includes(prev) ? prev : 'all';
+        }
+        const repFilter = toStr(repFilterEl?.value || 'all');
+
+        let rows = [...state.progressItems];
+        if (repFilter !== 'all') rows = rows.filter(item => item.rep === repFilter);
+        if (statusFilter !== 'all') rows = rows.filter(item => item.status === statusFilter);
+        if (search) {
+            rows = rows.filter(item => {
+                const hay = `${item.rep} ${item.customer} ${item.actionPlan} ${item.result}`.toLowerCase();
+                return hay.includes(search);
+            });
+        }
+        rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+        body.innerHTML = rows.length === 0
+            ? '<tr><td colspan="8">データがありません</td></tr>'
+            : rows.map(item => `
+                <tr>
+                    <td>${item.rep || '-'}</td>
+                    <td>${item.customer || '-'}</td>
+                    <td>${item.actionPlan || '-'}</td>
+                    <td>${item.result || '-'}</td>
+                    <td>${item.status || '-'}</td>
+                    <td>${toStr(item.updatedAt).replace('T', ' ').slice(0, 16)}</td>
+                    <td><button class="btn-secondary progress-edit-btn" data-progress-edit="${item.id}">編集</button></td>
+                    <td><button class="btn-secondary progress-delete-btn" data-progress-delete="${item.id}">削除</button></td>
+                </tr>
+            `).join('');
+    }
+
+    function saveProgressItem() {
+        const editId = toNum(document.getElementById(pfx('progress-edit-id')).value);
+        const data = getProgressFormValues();
+        if (!data.rep || !data.customer || !data.actionPlan) {
+            alert('担当者・顧客・アクションプランは必須です');
+            return;
+        }
+
+        if (editId > 0) {
+            const idx = state.progressItems.findIndex(item => item.id === editId);
+            if (idx >= 0) {
+                state.progressItems[idx] = normalizeProgressItem({ ...state.progressItems[idx], ...data, updatedAt: new Date().toISOString() }, editId);
+            }
+        } else {
+            const item = normalizeProgressItem({ ...data, id: state.progressSeq, updatedAt: new Date().toISOString() }, state.progressSeq);
+            state.progressItems.push(item);
+            state.progressSeq += 1;
+        }
+        clearProgressForm();
+        renderProgressTable();
+        scheduleAutoStateSave(200);
+    }
+
+    function editProgressItemById(id) {
+        const item = state.progressItems.find(v => v.id === id);
+        if (!item) return;
+        setInputValue('progress-edit-id', id);
+        setInputValue('progress-rep', item.rep);
+        setInputValue('progress-customer', item.customer);
+        setInputValue('progress-action', item.actionPlan);
+        setInputValue('progress-result', item.result);
+        setInputValue('progress-status', item.status);
+    }
+
+    function deleteProgressItemById(id) {
+        const before = state.progressItems.length;
+        state.progressItems = state.progressItems.filter(item => item.id !== id);
+        if (state.progressItems.length === before) return;
+        renderProgressTable();
+        scheduleAutoStateSave(200);
     }
 
     // ── Render: Details ──
@@ -1488,7 +1867,9 @@
                     }, 0);
                     break;
                 case 'simulation': renderSimulation(); break;
+                case 'store-detail': renderStoreDetail(); break;
                 case 'details': renderDetails(); break;
+                case 'progress': renderProgressTable(); break;
             }
         }
     }
@@ -1498,13 +1879,15 @@
         const analyzeBtn = document.getElementById(pfx('btn-analyze'));
         if (analyzeBtn) analyzeBtn.disabled = !ok;
         const shippingInput = document.getElementById(pfx('file-shipping'));
-        if (shippingInput) shippingInput.disabled = state.shippingData.length > 0;
+        if (shippingInput) shippingInput.disabled = !uploadUnlocked || state.shippingData.length > 0;
+        const salesInput = document.getElementById(pfx('file-sales'));
+        if (salesInput) salesInput.disabled = !uploadUnlocked;
         const productInput = document.getElementById(pfx('file-product'));
-        if (productInput) productInput.disabled = state.productData.length > 0;
+        if (productInput) productInput.disabled = !uploadUnlocked || state.productData.length > 0;
         const clearShippingBtn = document.getElementById(pfx('btn-shipping-clear'));
-        if (clearShippingBtn) clearShippingBtn.disabled = state.shippingData.length === 0;
+        if (clearShippingBtn) clearShippingBtn.disabled = !uploadUnlocked || state.shippingData.length === 0;
         const clearProductBtn = document.getElementById(pfx('btn-product-clear'));
-        if (clearProductBtn) clearProductBtn.disabled = state.productData.length === 0;
+        if (clearProductBtn) clearProductBtn.disabled = !uploadUnlocked || state.productData.length === 0;
     }
 
     function setInputValue(id, value) {
@@ -1579,6 +1962,9 @@
                 shippingData: state.shippingData,
                 salesData: state.salesData,
                 productData: state.productData,
+                progressItems: state.progressItems,
+                progressSeq: state.progressSeq,
+                progressDraft: readProgressDraftInputs(),
                 settings: getSettings()
             };
             const meta = await window.KaientaiCloud.saveModuleState(MODULE_ID, payload);
@@ -1618,19 +2004,27 @@
             state.shippingData = payload.shippingData;
             state.salesData = payload.salesData;
             state.productData = payload.productData;
+            state.progressItems = Array.isArray(payload.progressItems)
+                ? payload.progressItems.map((item, idx) => normalizeProgressItem(item, idx + 1))
+                : [];
+            state.progressSeq = toNum(payload.progressSeq) || 1;
+            ensureProgressSeq();
             state.results = null;
             state.storeBaseCache = {};
             state.storeViewRuntime = null;
+            state.storeDetailRuntime = null;
             state.storeCurrentPage = 1;
             state.storeCurrentPageTotal = 1;
             logLines = [];
 
             restoreSavedSettings(payload.settings || {});
+            applyProgressDraftInputs(payload.progressDraft || {});
+            renderProgressTable();
             updateUploadCardsByState();
             checkAllLoaded();
             KaientaiM.updateModuleStatus(MODULE_ID, `Data loaded (${state.salesData.length})`, true);
 
-            ['overview', 'monthly', 'store', 'sim', 'details'].forEach(id => {
+            ['overview', 'monthly', 'store', 'store-detail', 'sim', 'details'].forEach(id => {
                 const emp = document.getElementById(pfx(id + '-empty'));
                 const con = document.getElementById(pfx(id + '-content'));
                 if (emp) emp.style.display = '';
@@ -1668,17 +2062,23 @@
         </div>
 
         <div class="mod-nav">
-            <button class="mod-nav-btn active" data-mtab="upload">データ読込</button>
-            <button class="mod-nav-btn" data-mtab="settings">設定</button>
-            <button class="mod-nav-btn" data-mtab="overview">全体概要</button>
+            <button class="mod-nav-btn active" data-mtab="overview">全体概要</button>
             <button class="mod-nav-btn" data-mtab="monthly">月次分析</button>
             <button class="mod-nav-btn" data-mtab="store">販売店分析</button>
             <button class="mod-nav-btn" data-mtab="simulation">掛け率シミュレーション</button>
+            <button class="mod-nav-btn" data-mtab="store-detail">販売店詳細分析</button>
             <button class="mod-nav-btn" data-mtab="details">商品別詳細</button>
+            <button class="mod-nav-btn" data-mtab="progress">進捗管理</button>
+            <button class="mod-nav-btn" data-mtab="upload">データ読込</button>
+            <button class="mod-nav-btn" data-mtab="settings">設定</button>
         </div>
 
         <!-- Upload -->
-        <div class="mod-tab active" id="${pfx('tab-upload')}">
+        <div class="mod-tab" id="${pfx('tab-upload')}">
+            <div class="tab-lock-banner">
+                <span id="${pfx('upload-lock-state')}">ロック中: 読込実行にはパスワードが必要です</span>
+                <button class="btn-secondary" id="${pfx('btn-upload-unlock')}">読込ロック解除</button>
+            </div>
             <div class="upload-grid">
                 <div class="upload-card" id="${pfx('card-shipping')}">
                     <div class="upload-icon">&#128666;</div>
@@ -1692,7 +2092,7 @@
                 <div class="upload-card" id="${pfx('card-sales')}">
                     <div class="upload-icon">&#128200;</div>
                     <h3>販売実績データ</h3>
-                    <p>A列:受注番号 / B列:受注日 / D列:販売店 / H列:JAN / I列:商品名 / K列:数量 / L列:単価 / M列:合計 / S列:メーカー / Z列:営業担当 / AB列:県名</p>
+                    <p>A列:受注番号 / C列:仕入先コード / B列:受注日 / D列:販売店 / H列:JAN / I列:商品名 / K列:数量 / L列:単価 / M列:合計 / S列:メーカー / Z列:営業担当 / AB列:県名</p>
                     <label class="upload-btn">ファイル選択<input type="file" accept=".xlsx,.xls,.csv" id="${pfx('file-sales')}" hidden multiple></label>
                     <div class="upload-status" id="${pfx('status-sales')}">未読込</div>
                     <div class="upload-hint">※複数月のファイルを同時選択可能</div>
@@ -1718,6 +2118,10 @@
 
         <!-- Settings -->
         <div class="mod-tab" id="${pfx('tab-settings')}">
+            <div class="tab-lock-banner">
+                <span id="${pfx('settings-lock-state')}">ロック中: 設定編集にはパスワードが必要です</span>
+                <button class="btn-secondary" id="${pfx('btn-settings-unlock')}">設定ロック解除</button>
+            </div>
             <div class="settings-grid">
                 <div class="setting-card rebate-setting-card">
                     <h3>リベート設定</h3>
@@ -1749,7 +2153,7 @@
         </div>
 
         <!-- Overview -->
-        <div class="mod-tab" id="${pfx('tab-overview')}">
+        <div class="mod-tab active" id="${pfx('tab-overview')}">
             <div id="${pfx('overview-empty')}" class="empty-state">データを読み込んで分析を実行してください</div>
             <div id="${pfx('overview-content')}" style="display:none;">
                 <div class="kpi-grid">
@@ -1784,7 +2188,7 @@
         <div class="mod-tab" id="${pfx('tab-store')}">
             <div id="${pfx('store-empty')}" class="empty-state">データを読み込んで分析を実行してください</div>
             <div id="${pfx('store-content')}" style="display:none;">
-                <div class="filter-bar"><label>メーカー:</label><select id="${pfx('store-maker')}"><option value="all">全て</option><option value="aron">アロン化成</option><option value="pana">パナソニック</option></select><label>年月:</label><select id="${pfx('store-month')}"><option value="all">全期間</option></select><label>営業担当:</label><select id="${pfx('store-rep')}"><option value="all">全担当</option></select><label>並び替え:</label><select id="${pfx('store-sort')}"><option value="gross-desc">粗利(高い順)</option><option value="gross-asc">粗利(低い順)</option><option value="sales-desc">売上(高い順)</option><option value="sales-asc">売上(低い順)</option><option value="qty-desc">数量(多い順)</option><option value="qty-asc">数量(少ない順)</option><option value="rate-desc">粗利率(高い順)</option><option value="rate-asc">粗利率(低い順)</option><option value="aron-rate-desc">アロン掛率(高い順)</option><option value="aron-rate-asc">アロン掛率(低い順)</option><option value="pana-rate-desc">パナ掛率(高い順)</option><option value="pana-rate-asc">パナ掛率(低い順)</option><option value="rep-asc">担当者(昇順)</option><option value="rep-desc">担当者(降順)</option><option value="store-asc">販売店名(昇順)</option><option value="store-desc">販売店名(降順)</option></select><label>表示件数:</label><select id="${pfx('store-limit')}"><option value="300">300</option><option value="1000">1000</option><option value="all">全件</option></select></div>
+                <div class="filter-bar"><label>メーカー:</label><select id="${pfx('store-maker')}"><option value="all">全て</option><option value="aron">アロン化成</option><option value="pana">パナソニック</option></select><label>年月:</label><select id="${pfx('store-month')}"><option value="all">全期間</option></select><label>営業担当:</label><select id="${pfx('store-rep')}"><option value="all">全担当</option></select><label>並び替え:</label><select id="${pfx('store-sort')}"><option value="gross-desc">粗利(高い順)</option><option value="gross-asc">粗利(低い順)</option><option value="sales-desc">売上(高い順)</option><option value="sales-asc">売上(低い順)</option><option value="qty-desc">数量(多い順)</option><option value="qty-asc">数量(少ない順)</option><option value="rate-desc">粗利率(高い順)</option><option value="rate-asc">粗利率(低い順)</option><option value="aron-rate-desc">アロン掛率(高い順)</option><option value="aron-rate-asc">アロン掛率(低い順)</option><option value="pana-rate-desc">パナ掛率(高い順)</option><option value="pana-rate-asc">パナ掛率(低い順)</option><option value="rep-asc">担当者(昇順)</option><option value="rep-desc">担当者(降順)</option><option value="code-asc">仕入先コード(昇順)</option><option value="code-desc">仕入先コード(降順)</option><option value="store-asc">販売店名(昇順)</option><option value="store-desc">販売店名(降順)</option></select><label>表示件数:</label><select id="${pfx('store-limit')}"><option value="300">300</option><option value="1000">1000</option><option value="all">全件</option></select></div>
                 <div class="store-meta-row">
                     <div class="hint" id="${pfx('store-summary')}"></div>
                     <div class="store-pagination" id="${pfx('store-pagination')}" style="display:none;">
@@ -1793,7 +2197,7 @@
                         <button type="button" class="btn-secondary" id="${pfx('store-page-next')}">次へ</button>
                     </div>
                 </div>
-                <div class="table-wrapper"><table><thead><tr><th>販売店名</th><th>営業担当者</th><th>アロン掛率</th><th>パナ掛率</th><th>売上合計</th><th>原価合計</th><th>送料合計</th><th>商品粗利</th><th>粗利率</th><th>数量合計</th></tr></thead><tbody id="${pfx('store-tbody')}"></tbody></table></div>
+                <div class="table-wrapper"><table class="store-table"><thead><tr><th>販売店名</th><th>仕入先コード</th><th>営業担当者</th><th>アロン掛率</th><th>パナ掛率</th><th>売上合計</th><th>原価合計</th><th>送料合計</th><th>商品粗利</th><th>粗利率</th><th>数量合計</th></tr></thead><tbody id="${pfx('store-tbody')}"></tbody></table></div>
                 <div class="chart-box full">
                     <h3>販売店別 掛率シミュレーション</h3>
                     <div class="filter-bar"><label>販売店:</label><select id="${pfx('store-sim-store')}"></select><label>対象メーカー:</label><select id="${pfx('store-sim-maker')}"><option value="all">両メーカー</option><option value="aron">アロン化成のみ</option><option value="pana">パナソニックのみ</option></select><label>掛率変動(%):</label><input type="number" id="${pfx('store-sim-rate')}" value="0" step="0.1"><label>予想販売増加数(個):</label><input type="number" id="${pfx('store-sim-qty')}" value="0" step="1" min="0"></div>
@@ -1809,15 +2213,48 @@
             <div id="${pfx('sim-content')}" style="display:none;">
                 <div class="sim-controls">
                     <div class="sim-card"><h3>現在の平均掛け率</h3><div class="sim-current"><span>アロン化成: <strong id="${pfx('sim-cur-aron')}">-</strong></span><span>パナソニック: <strong id="${pfx('sim-cur-pana')}">-</strong></span><span>全体: <strong id="${pfx('sim-cur-all')}">-</strong></span></div></div>
-                    <div class="sim-card"><h3>掛け率変動シミュレーション</h3><div class="setting-row"><label>掛け率変動 (%)</label><input type="range" id="${pfx('sim-rate')}" min="-20" max="20" value="0" step="0.5"><span id="${pfx('sim-rate-display')}">±0%</span></div><div class="setting-row"><label>対象メーカー</label><select id="${pfx('sim-target')}"><option value="all">全体</option><option value="aron">アロン化成のみ</option><option value="pana">パナソニックのみ</option></select></div></div>
+                    <div class="sim-card">
+                        <h3>掛け率・リベート変動シミュレーション</h3>
+                        <div class="setting-row"><label>掛け率変動 (%)</label><input type="range" id="${pfx('sim-rate')}" min="-20" max="20" value="0" step="0.5"><span id="${pfx('sim-rate-display')}">±0%</span></div>
+                        <div class="setting-row"><label>対象メーカー</label><select id="${pfx('sim-target')}"><option value="all">全体</option><option value="aron">アロン化成のみ</option><option value="pana">パナソニックのみ</option></select></div>
+                        <div class="setting-row"><label>アロン リベート率増減 (pt)</label><input type="number" id="${pfx('sim-rebate-aron')}" value="0" step="0.1"></div>
+                        <div class="setting-row"><label>パナ リベート率増減 (pt)</label><input type="number" id="${pfx('sim-rebate-pana')}" value="0" step="0.1"></div>
+                        <div class="setting-row"><label>アロン 固定リベート増減 (円/月)</label><input type="number" id="${pfx('sim-fixed-aron')}" value="0" step="1000"></div>
+                        <div class="setting-row"><label>パナ 固定リベート増減 (円/月)</label><input type="number" id="${pfx('sim-fixed-pana')}" value="0" step="1000"></div>
+                    </div>
                 </div>
                 <div class="sim-result-grid">
-                    <div class="sim-result-card"><div class="sim-label">変動前 粗利</div><div class="sim-value" id="${pfx('sim-before')}">-</div></div>
+                    <div class="sim-result-card"><div class="sim-label">変動前 実利益</div><div class="sim-value" id="${pfx('sim-before')}">-</div></div>
                     <div class="sim-result-card arrow">&#8594;</div>
-                    <div class="sim-result-card"><div class="sim-label">変動後 粗利</div><div class="sim-value" id="${pfx('sim-after')}">-</div></div>
+                    <div class="sim-result-card"><div class="sim-label">変動後 実利益</div><div class="sim-value" id="${pfx('sim-after')}">-</div></div>
                     <div class="sim-result-card"><div class="sim-label">差額</div><div class="sim-value" id="${pfx('sim-diff')}">-</div></div>
                 </div>
-                <div class="chart-row"><div class="chart-box full"><h3>掛け率 vs 粗利 推移</h3><canvas id="${pfx('chart-sim')}"></canvas></div></div>
+                <div class="table-wrapper"><table><thead><tr><th>指標</th><th>変動前</th><th>変動後</th><th>差額</th></tr></thead><tbody id="${pfx('sim-breakdown-body')}"></tbody></table></div>
+                <div class="chart-row"><div class="chart-box full"><h3>掛け率 vs 実利益 推移</h3><canvas id="${pfx('chart-sim')}"></canvas></div></div>
+            </div>
+        </div>
+
+        <!-- Store Detail -->
+        <div class="mod-tab" id="${pfx('tab-store-detail')}">
+            <div id="${pfx('store-detail-empty')}" class="empty-state">データを読み込んで分析を実行してください</div>
+            <div id="${pfx('store-detail-content')}" style="display:none;">
+                <div class="chart-box full">
+                    <h3>販売店1件の詳細分析（軽量）</h3>
+                    <div class="filter-bar">
+                        <label>販売店名 / 仕入先コード検索:</label>
+                        <input type="text" id="${pfx('store-detail-search')}" placeholder="例: ○○商事 / 12345">
+                        <label>候補:</label>
+                        <select id="${pfx('store-detail-select')}"></select>
+                        <label>対象メーカー:</label>
+                        <select id="${pfx('store-detail-maker')}"><option value="all">両メーカー</option><option value="aron">アロン化成のみ</option><option value="pana">パナソニックのみ</option></select>
+                        <label>掛率変動(%):</label>
+                        <input type="number" id="${pfx('store-detail-rate')}" value="0" step="0.1">
+                        <label>予想販売増加数(個):</label>
+                        <input type="number" id="${pfx('store-detail-qty')}" value="0" step="1" min="0">
+                    </div>
+                    <div class="hint" id="${pfx('store-detail-summary')}"></div>
+                    <div class="table-wrapper"><table class="store-sim-table"><thead><tr><th>区分</th><th>売上</th><th>粗利</th><th>粗利率</th><th>数量</th><th>アロン掛率</th><th>パナ掛率</th><th>対象</th></tr></thead><tbody id="${pfx('store-detail-tbody')}"></tbody></table></div>
+                </div>
             </div>
         </div>
 
@@ -1834,6 +2271,34 @@
                 <div class="action-bar"><button class="btn-secondary" id="${pfx('btn-export')}">CSVエクスポート</button></div>
             </div>
         </div>
+
+        <!-- Progress -->
+        <div class="mod-tab" id="${pfx('tab-progress')}">
+            <div id="${pfx('progress-empty')}" class="empty-state" style="display:none;">進捗データがありません</div>
+            <div id="${pfx('progress-content')}">
+                <div class="chart-box full">
+                    <h3>進捗管理</h3>
+                    <input type="hidden" id="${pfx('progress-edit-id')}" value="">
+                    <div class="filter-bar">
+                        <label>営業担当</label><input type="text" id="${pfx('progress-rep')}" placeholder="例: 田中">
+                        <label>顧客</label><input type="text" id="${pfx('progress-customer')}" placeholder="販売店名">
+                        <label>ステータス</label><select id="${pfx('progress-status')}"><option value="planned">計画中</option><option value="doing">実行中</option><option value="done">完了</option><option value="hold">保留</option></select>
+                    </div>
+                    <div class="setting-row"><label>アクションプラン</label><input type="text" id="${pfx('progress-action')}" placeholder="例: 値上げ提案の事前打診"></div>
+                    <div class="setting-row"><label>実行結果</label><input type="text" id="${pfx('progress-result')}" placeholder="例: 次回訪問で詳細見積依頼"></div>
+                    <div class="action-bar">
+                        <button class="btn-primary" id="${pfx('progress-save')}">登録 / 更新</button>
+                        <button class="btn-secondary" id="${pfx('progress-clear-form')}">入力クリア</button>
+                    </div>
+                    <div class="filter-bar">
+                        <label>担当フィルタ</label><select id="${pfx('progress-filter-rep')}"><option value="all">全担当</option></select>
+                        <label>ステータス</label><select id="${pfx('progress-filter-status')}"><option value="all">全て</option><option value="planned">計画中</option><option value="doing">実行中</option><option value="done">完了</option><option value="hold">保留</option></select>
+                        <label>検索</label><input type="text" id="${pfx('progress-filter-search')}" placeholder="担当/顧客/内容">
+                    </div>
+                    <div class="table-wrapper"><table><thead><tr><th>営業担当</th><th>顧客</th><th>アクションプラン</th><th>結果</th><th>状態</th><th>更新日時</th><th>編集</th><th>削除</th></tr></thead><tbody id="${pfx('progress-tbody')}"></tbody></table></div>
+                </div>
+            </div>
+        </div>
         `;
     }
 
@@ -1844,9 +2309,15 @@
             btn.addEventListener('click', () => switchModTab(btn.dataset.mtab));
         });
 
+        const uploadUnlockBtn = document.getElementById(pfx('btn-upload-unlock'));
+        if (uploadUnlockBtn) uploadUnlockBtn.addEventListener('click', () => unlockTabGroup('upload'));
+        const settingsUnlockBtn = document.getElementById(pfx('btn-settings-unlock'));
+        if (settingsUnlockBtn) settingsUnlockBtn.addEventListener('click', () => unlockTabGroup('settings'));
+
         // File uploads
         document.getElementById(pfx('file-shipping')).addEventListener('change', async (e) => {
             if (!e.target.files.length) return;
+            if (!ensureUploadUnlocked()) { e.target.value = ''; return; }
             if (state.shippingData.length > 0) {
                 alert('送料マスタは1セット固定です。先に「送料データ解除」を実行してください。');
                 e.target.value = '';
@@ -1857,6 +2328,7 @@
         });
         document.getElementById(pfx('file-sales')).addEventListener('change', async (e) => {
             if (!e.target.files.length) return;
+            if (!ensureUploadUnlocked()) { e.target.value = ''; return; }
             try {
                 const list = [];
                 for (const f of Array.from(e.target.files)) list.push(await parseExcel(f));
@@ -1866,6 +2338,7 @@
         });
         document.getElementById(pfx('file-product')).addEventListener('change', async (e) => {
             if (!e.target.files.length) return;
+            if (!ensureUploadUnlocked()) { e.target.value = ''; return; }
             if (state.productData.length > 0) {
                 alert('商品マスタ追加はできません。先に「商品マスタクリア」を実行してください。');
                 e.target.value = '';
@@ -1882,6 +2355,7 @@
 
         document.getElementById(pfx('btn-analyze')).addEventListener('click', analyze);
         document.getElementById(pfx('btn-shipping-clear')).addEventListener('click', () => {
+            if (!ensureUploadUnlocked()) return;
             if (state.shippingData.length === 0) return;
             state.shippingData = [];
             resetAnalysisOutputs('送料解除（再分析待ち）');
@@ -1892,6 +2366,7 @@
             scheduleAutoStateSave();
         });
         document.getElementById(pfx('btn-product-clear')).addEventListener('click', () => {
+            if (!ensureUploadUnlocked()) return;
             if (state.productData.length === 0) return;
             state.productData = [];
             resetAnalysisOutputs('商品マスタクリア（再分析待ち）');
@@ -1902,6 +2377,7 @@
             scheduleAutoStateSave();
         });
         document.getElementById(pfx('btn-recalc')).addEventListener('click', () => {
+            if (!ensureSettingsUnlocked()) return;
             if (state.salesData.length === 0) { alert('データを先に読み込んでください。'); return; }
             analyze();
         });
@@ -1953,6 +2429,33 @@
         document.getElementById(pfx('details-search')).addEventListener('input', renderDetails);
         document.getElementById(pfx('sim-rate')).addEventListener('input', renderSimulation);
         document.getElementById(pfx('sim-target')).addEventListener('change', renderSimulation);
+        document.getElementById(pfx('sim-rebate-aron')).addEventListener('input', renderSimulation);
+        document.getElementById(pfx('sim-rebate-pana')).addEventListener('input', renderSimulation);
+        document.getElementById(pfx('sim-fixed-aron')).addEventListener('input', renderSimulation);
+        document.getElementById(pfx('sim-fixed-pana')).addEventListener('input', renderSimulation);
+
+        document.getElementById(pfx('store-detail-search')).addEventListener('input', renderStoreDetail);
+        document.getElementById(pfx('store-detail-select')).addEventListener('change', renderStoreDetail);
+        document.getElementById(pfx('store-detail-maker')).addEventListener('change', renderStoreDetail);
+        document.getElementById(pfx('store-detail-rate')).addEventListener('input', renderStoreDetail);
+        document.getElementById(pfx('store-detail-qty')).addEventListener('input', renderStoreDetail);
+
+        document.getElementById(pfx('progress-save')).addEventListener('click', saveProgressItem);
+        document.getElementById(pfx('progress-clear-form')).addEventListener('click', clearProgressForm);
+        document.getElementById(pfx('progress-filter-rep')).addEventListener('change', renderProgressTable);
+        document.getElementById(pfx('progress-filter-status')).addEventListener('change', renderProgressTable);
+        document.getElementById(pfx('progress-filter-search')).addEventListener('input', renderProgressTable);
+        document.getElementById(pfx('progress-tbody')).addEventListener('click', (e) => {
+            const target = e.target;
+            if (!(target instanceof HTMLElement)) return;
+            const editId = toNum(target.getAttribute('data-progress-edit'));
+            const deleteId = toNum(target.getAttribute('data-progress-delete'));
+            if (editId > 0) {
+                editProgressItemById(editId);
+            } else if (deleteId > 0) {
+                deleteProgressItemById(deleteId);
+            }
+        });
 
         // Export
         document.getElementById(pfx('btn-export')).addEventListener('click', () => {
@@ -1975,11 +2478,18 @@
             buildHTML(container);
             bindEvents(container);
             renderMonthlyRebateInputs();
+            renderProgressTable();
+            applyTabLockState();
             const restoredLocal = restoreAutoState();
             if (!restoredLocal) restoreCloudStateIfNeeded();
+            scheduleCloudStateSave(2500);
             checkAllLoaded();
         },
         onShow() {
+            if (currentTab === 'progress') {
+                switchModTab('progress');
+                return;
+            }
             if (state.results && currentTab !== 'upload' && currentTab !== 'settings') {
                 switchModTab(currentTab);
             }

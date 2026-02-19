@@ -53,14 +53,30 @@ body {
 .sidebar-header {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 20px 16px;
+    gap: 14px;
+    padding: 14px 12px;
     border-bottom: 1px solid rgba(255,255,255,0.12);
 }
 
-.logo-icon { font-size: 32px; }
-.logo-text { font-size: 18px; font-weight: 700; letter-spacing: 1px; }
-.logo-sub { font-size: 10px; opacity: 0.6; display: block; }
+.logo-icon {
+    width: 88px;
+    height: 88px;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.16);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    overflow: hidden;
+}
+.logo-icon-img {
+    width: 98%;
+    height: 98%;
+    object-fit: contain;
+    image-rendering: -webkit-optimize-contrast;
+}
+.logo-text { font-size: 21px; font-weight: 700; letter-spacing: 0.4px; line-height: 1.2; }
+.logo-sub { font-size: 12px; opacity: 0.85; display: block; margin-top: 2px; }
 
 .sidebar-nav {
     flex: 1;
@@ -240,12 +256,44 @@ body {
     transition: background 0.2s;
 }
 .upload-btn:hover { background: var(--primary-light); }
+.upload-btn.locked {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: none;
+}
 
 .upload-status { margin-top: 12px; font-size: 13px; color: var(--text-light); }
 .upload-hint { margin-top: 6px; font-size: 11px; color: var(--accent); }
 
 /* ── Buttons ── */
 .action-bar { display: flex; gap: 12px; margin-top: 20px; }
+.store-advanced-controls { margin-top: 0; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+.store-advanced-controls .hint { margin: 0; }
+.auth-lock-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+.auth-lock-status {
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: #f5f5f5;
+}
+.auth-lock-status.locked {
+    color: var(--danger);
+    border-color: #ffcdd2;
+    background: #ffebee;
+}
+.auth-lock-status.unlocked {
+    color: var(--success);
+    border-color: #c8e6c9;
+    background: #e8f5e9;
+}
 
 .btn-primary {
     background: var(--accent);
@@ -274,6 +322,17 @@ body {
     font-family: inherit;
 }
 .btn-secondary:hover { background: #e8eaf6; }
+.progress-edit-btn,
+.progress-delete-btn {
+    padding: 4px 10px;
+    font-size: 11px;
+    margin-right: 6px;
+}
+.progress-delete-btn {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+.progress-delete-btn:hover { background: #ffebee; }
 
 /* ── Settings ── */
 .settings-grid {
@@ -369,13 +428,15 @@ body {
 }
 .monthly-rebate-field {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
+    flex-direction: column;
     gap: 10px;
     font-size: 12px;
 }
 .monthly-rebate-input {
-    width: 120px;
+    width: 100%;
+    max-width: 180px;
     padding: 5px 8px;
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -471,12 +532,38 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .filter-bar label { font-size: 13px; font-weight: 600; }
 .filter-bar select,
-.filter-bar input[type="text"] {
+.filter-bar input[type="text"],
+.filter-bar input[type="number"] {
     padding: 6px 10px;
     border: 1px solid var(--border);
     border-radius: 4px;
     font-size: 13px;
     font-family: inherit;
+}
+
+.tab-lock-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: #fff8e1;
+    border: 1px solid #ffe082;
+    color: #6d4c41;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+
+.store-table thead th:nth-child(3),
+.store-table tbody td:nth-child(3) {
+    text-align: left;
+}
+
+.progress-edit-btn,
+.progress-delete-btn {
+    padding: 4px 10px;
+    font-size: 11px;
 }
 
 /* ── Simulation ── */
@@ -533,7 +620,9 @@ tbody tr:last-child td { border-bottom: none; }
 /* ── Responsive ── */
 @media (max-width: 900px) {
     .sidebar { width: 60px; }
+    .sidebar-header { padding: 8px 4px; justify-content: center; }
     .sidebar-header > div { display: none; }
+    .logo-icon { width: 50px; height: 50px; border-radius: 12px; margin: 0 auto; }
     .sidebar-btn span:last-child { display: none; }
     .sidebar-icon { font-size: 20px; }
     .main { margin-left: 60px; }
