@@ -896,7 +896,7 @@
 
         log(`マッチング: ${matchCount}件一致(3データ一致) / 除外: ${excludedCount} / 送料未一致: ${noShipping} / 商品マスタ未一致: ${noProduct} / 地域判定不可: ${noPrefArea} / エリア補完: ${areaFallback} / 送料0円: ${zeroAreaCost}`);
 
-        const monthlyAgg = {}, storeAgg = {}, productAgg = {};
+        const monthlyAgg = {}, storeAgg = {}, storeSliceAgg = {}, productAgg = {};
         let totalSales = 0, totalCost = 0, totalShipping = 0, totalGross = 0, totalQty = 0;
         let aronSales = 0, panaSales = 0;
 
@@ -924,6 +924,41 @@
             storeAgg[sk].shipping += r.totalShipping;
             storeAgg[sk].gross += r.grossProfit;
             storeAgg[sk].qty += r.qty;
+
+            const ssKey = [r.store, r.storeCode || '', r.salesRep || '', r.month, r.maker].join('\t');
+            if (!storeSliceAgg[ssKey]) {
+                storeSliceAgg[ssKey] = {
+                    store: r.store || '(不明)',
+                    storeCode: r.storeCode || '',
+                    salesRep: r.salesRep || '',
+                    month: r.month,
+                    maker: r.maker,
+                    sales: 0,
+                    cost: 0,
+                    shipping: 0,
+                    gross: 0,
+                    qty: 0,
+                    aronRateNumerator: 0,
+                    aronRateDenominator: 0,
+                    panaRateNumerator: 0,
+                    panaRateDenominator: 0
+                };
+            }
+            const ss = storeSliceAgg[ssKey];
+            ss.sales += r.salesAmount;
+            ss.cost += r.totalCost;
+            ss.shipping += r.totalShipping;
+            ss.gross += r.grossProfit;
+            ss.qty += r.qty;
+            if (r.listPrice > 0 && r.qty > 0) {
+                if (r.maker === 'aron') {
+                    ss.aronRateNumerator += r.unitPrice * r.qty;
+                    ss.aronRateDenominator += r.listPrice * r.qty;
+                } else if (r.maker === 'pana') {
+                    ss.panaRateNumerator += r.unitPrice * r.qty;
+                    ss.panaRateDenominator += r.listPrice * r.qty;
+                }
+            }
 
             if (!productAgg[r.jan]) productAgg[r.jan] = {
                 jan: r.jan, name: r.name, maker: r.maker, listPrice: r.listPrice,
@@ -971,7 +1006,7 @@
         const realProfit = totalGross + totalRebate - totalMinus;
 
         state.results = {
-            records, monthlyAgg, storeAgg, productAgg, months,
+            records, monthlyAgg, storeAgg, storeSlices: Object.values(storeSliceAgg), productAgg, months,
             totalSales, totalCost, totalShipping, totalGross, totalQty,
             totalRebate, totalWarehouse, totalWarehouseOut, totalMinus, realProfit,
             aronSales, panaSales, settings, monthSalesTotals, rebateByMaker, minusByMaker
@@ -1410,28 +1445,81 @@
         const sortKey = document.getElementById(pfx('store-sort')).value;
         const repSel = document.getElementById(pfx('store-rep'));
         const prevRep = repSel.value;
+        const searchQ = toStr(document.getElementById(pfx('store-search')).value).toLowerCase();
         const limitRaw = document.getElementById(pfx('store-limit')).value;
 
-        const base = getStoreBase(r.records, makerF, monthF);
+        const slices = Array.isArray(r.storeSlices) ? r.storeSlices : [];
+        const repSet = new Set();
+        for (const slice of slices) {
+            if (makerF !== 'all' && slice.maker !== makerF) continue;
+            if (monthF !== 'all' && slice.month !== monthF) continue;
+            if (slice.salesRep) repSet.add(slice.salesRep);
+        }
+        const reps = [...repSet].sort((a, b) => a.localeCompare(b, 'ja'));
         repSel.innerHTML = '<option value="all">全担当</option>';
-        for (const rep of base.reps) repSel.innerHTML += `<option value="${rep}">${rep}</option>`;
-        repSel.value = base.reps.includes(prevRep) ? prevRep : 'all';
+        for (const rep of reps) repSel.innerHTML += `<option value="${rep}">${rep}</option>`;
+        repSel.value = reps.includes(prevRep) ? prevRep : 'all';
         const repF = repSel.value;
 
-        if (!base.entriesByRep[repF]) {
-            const scopedRecords = base.recordsByRep[repF] || [];
-            base.entriesByRep[repF] = buildStoreEntries(scopedRecords);
+        const agg = {};
+        for (const slice of slices) {
+            if (makerF !== 'all' && slice.maker !== makerF) continue;
+            if (monthF !== 'all' && slice.month !== monthF) continue;
+            if (repF !== 'all' && slice.salesRep !== repF) continue;
+            const key = slice.store || '(不明)';
+            if (!agg[key]) {
+                agg[key] = {
+                    store: key,
+                    sales: 0, cost: 0, shipping: 0, gross: 0, qty: 0,
+                    reps: new Set(),
+                    codes: new Set(),
+                    aronRateNumerator: 0, aronRateDenominator: 0,
+                    panaRateNumerator: 0, panaRateDenominator: 0
+                };
+            }
+            const row = agg[key];
+            row.sales += slice.sales;
+            row.cost += slice.cost;
+            row.shipping += slice.shipping;
+            row.gross += slice.gross;
+            row.qty += slice.qty;
+            if (slice.salesRep) row.reps.add(slice.salesRep);
+            if (slice.storeCode) row.codes.add(slice.storeCode);
+            row.aronRateNumerator += slice.aronRateNumerator;
+            row.aronRateDenominator += slice.aronRateDenominator;
+            row.panaRateNumerator += slice.panaRateNumerator;
+            row.panaRateDenominator += slice.panaRateDenominator;
         }
 
-        const entries = [...base.entriesByRep[repF]];
+        let entries = Object.values(agg).map(e => {
+            const repNames = [...e.reps].sort((a, b) => a.localeCompare(b, 'ja'));
+            const codes = [...e.codes].sort((a, b) => a.localeCompare(b, 'ja'));
+            return {
+                store: e.store,
+                storeCode: codes.join(' / '),
+                salesRep: repNames.join(' / ') || '(未設定)',
+                sales: e.sales,
+                cost: e.cost,
+                shipping: e.shipping,
+                gross: e.gross,
+                qty: e.qty,
+                rate: e.sales > 0 ? e.gross / e.sales : 0,
+                aronRate: e.aronRateDenominator > 0 ? e.aronRateNumerator / e.aronRateDenominator : 0,
+                panaRate: e.panaRateDenominator > 0 ? e.panaRateNumerator / e.panaRateDenominator : 0
+            };
+        });
+
+        if (searchQ) {
+            entries = entries.filter(e => e.store.toLowerCase().includes(searchQ) || e.storeCode.toLowerCase().includes(searchQ));
+        }
+
         sortStoreEntries(entries, sortKey);
 
-        const isAll = limitRaw === 'all';
-        const pageSize = isAll ? Math.max(1, entries.length || 1) : Math.max(1, toNum(limitRaw) || 300);
-        const totalPages = isAll ? 1 : Math.max(1, Math.ceil(entries.length / pageSize));
+        const pageSize = Math.max(1, Math.min(1000, toNum(limitRaw) || 300));
+        const totalPages = Math.max(1, Math.ceil(entries.length / pageSize));
         state.storeCurrentPageTotal = totalPages;
-        state.storeCurrentPage = isAll ? 1 : Math.min(Math.max(1, state.storeCurrentPage || 1), totalPages);
-        const startIndex = isAll ? 0 : (state.storeCurrentPage - 1) * pageSize;
+        state.storeCurrentPage = Math.min(Math.max(1, state.storeCurrentPage || 1), totalPages);
+        const startIndex = (state.storeCurrentPage - 1) * pageSize;
         const displayed = entries.slice(startIndex, startIndex + pageSize);
         const tbody = document.getElementById(pfx('store-tbody'));
         tbody.innerHTML = displayed.map(e =>
@@ -1460,9 +1548,7 @@
             nextBtn.disabled = state.storeCurrentPage >= totalPages;
         }
 
-        const scopedRecords = base.recordsByRep[repF] || [];
-        state.storeViewRuntime = { scopedRecords, entries };
-        renderStoreSimulation(scopedRecords, entries);
+        state.storeViewRuntime = null;
 
         const top = [...entries].sort((a, b) => b.gross - a.gross).slice(0, 15);
         destroyChart(state.charts, 'store');
@@ -2188,7 +2274,7 @@
         <div class="mod-tab" id="${pfx('tab-store')}">
             <div id="${pfx('store-empty')}" class="empty-state">データを読み込んで分析を実行してください</div>
             <div id="${pfx('store-content')}" style="display:none;">
-                <div class="filter-bar"><label>メーカー:</label><select id="${pfx('store-maker')}"><option value="all">全て</option><option value="aron">アロン化成</option><option value="pana">パナソニック</option></select><label>年月:</label><select id="${pfx('store-month')}"><option value="all">全期間</option></select><label>営業担当:</label><select id="${pfx('store-rep')}"><option value="all">全担当</option></select><label>並び替え:</label><select id="${pfx('store-sort')}"><option value="gross-desc">粗利(高い順)</option><option value="gross-asc">粗利(低い順)</option><option value="sales-desc">売上(高い順)</option><option value="sales-asc">売上(低い順)</option><option value="qty-desc">数量(多い順)</option><option value="qty-asc">数量(少ない順)</option><option value="rate-desc">粗利率(高い順)</option><option value="rate-asc">粗利率(低い順)</option><option value="aron-rate-desc">アロン掛率(高い順)</option><option value="aron-rate-asc">アロン掛率(低い順)</option><option value="pana-rate-desc">パナ掛率(高い順)</option><option value="pana-rate-asc">パナ掛率(低い順)</option><option value="rep-asc">担当者(昇順)</option><option value="rep-desc">担当者(降順)</option><option value="code-asc">仕入先コード(昇順)</option><option value="code-desc">仕入先コード(降順)</option><option value="store-asc">販売店名(昇順)</option><option value="store-desc">販売店名(降順)</option></select><label>表示件数:</label><select id="${pfx('store-limit')}"><option value="300">300</option><option value="1000">1000</option><option value="all">全件</option></select></div>
+                <div class="filter-bar"><label>メーカー:</label><select id="${pfx('store-maker')}"><option value="all">全て</option><option value="aron">アロン化成</option><option value="pana">パナソニック</option></select><label>年月:</label><select id="${pfx('store-month')}"><option value="all">全期間</option></select><label>営業担当:</label><select id="${pfx('store-rep')}"><option value="all">全担当</option></select><label>検索:</label><input type="text" id="${pfx('store-search')}" placeholder="販売店名 / 仕入先コード"><label>並び替え:</label><select id="${pfx('store-sort')}"><option value="gross-desc">粗利(高い順)</option><option value="gross-asc">粗利(低い順)</option><option value="sales-desc">売上(高い順)</option><option value="sales-asc">売上(低い順)</option><option value="qty-desc">数量(多い順)</option><option value="qty-asc">数量(少ない順)</option><option value="rate-desc">粗利率(高い順)</option><option value="rate-asc">粗利率(低い順)</option><option value="aron-rate-desc">アロン掛率(高い順)</option><option value="aron-rate-asc">アロン掛率(低い順)</option><option value="pana-rate-desc">パナ掛率(高い順)</option><option value="pana-rate-asc">パナ掛率(低い順)</option><option value="rep-asc">担当者(昇順)</option><option value="rep-desc">担当者(降順)</option><option value="code-asc">仕入先コード(昇順)</option><option value="code-desc">仕入先コード(降順)</option><option value="store-asc">販売店名(昇順)</option><option value="store-desc">販売店名(降順)</option></select><label>表示件数:</label><select id="${pfx('store-limit')}"><option value="100">100</option><option value="300" selected>300</option><option value="1000">1000</option></select></div>
                 <div class="store-meta-row">
                     <div class="hint" id="${pfx('store-summary')}"></div>
                     <div class="store-pagination" id="${pfx('store-pagination')}" style="display:none;">
@@ -2198,11 +2284,7 @@
                     </div>
                 </div>
                 <div class="table-wrapper"><table class="store-table"><thead><tr><th>販売店名</th><th>仕入先コード</th><th>営業担当者</th><th>アロン掛率</th><th>パナ掛率</th><th>売上合計</th><th>原価合計</th><th>送料合計</th><th>商品粗利</th><th>粗利率</th><th>数量合計</th></tr></thead><tbody id="${pfx('store-tbody')}"></tbody></table></div>
-                <div class="chart-box full">
-                    <h3>販売店別 掛率シミュレーション</h3>
-                    <div class="filter-bar"><label>販売店:</label><select id="${pfx('store-sim-store')}"></select><label>対象メーカー:</label><select id="${pfx('store-sim-maker')}"><option value="all">両メーカー</option><option value="aron">アロン化成のみ</option><option value="pana">パナソニックのみ</option></select><label>掛率変動(%):</label><input type="number" id="${pfx('store-sim-rate')}" value="0" step="0.1"><label>予想販売増加数(個):</label><input type="number" id="${pfx('store-sim-qty')}" value="0" step="1" min="0"></div>
-                    <div class="table-wrapper"><table class="store-sim-table"><thead><tr><th>区分</th><th>売上</th><th>粗利</th><th>粗利率</th><th>数量</th><th>アロン掛率</th><th>パナ掛率</th></tr></thead><tbody id="${pfx('store-sim-tbody')}"></tbody></table></div>
-                </div>
+                <div class="chart-box full"><h3>販売店詳細分析は別タブ</h3><p class="hint">販売店分析を軽量化するため、1件指定の詳細シミュレーションは「販売店詳細分析」タブに分離しています。</p><div class="action-bar"><button class="btn-secondary" id="${pfx('btn-open-store-detail')}">販売店詳細分析を開く</button></div></div>
                 <div class="chart-row"><div class="chart-box full"><h3>販売店別 粗利ランキング</h3><canvas id="${pfx('chart-store')}"></canvas></div></div>
             </div>
         </div>
@@ -2408,6 +2490,7 @@
         document.getElementById(pfx('store-maker')).addEventListener('change', resetStorePageAndRender);
         document.getElementById(pfx('store-month')).addEventListener('change', resetStorePageAndRender);
         document.getElementById(pfx('store-rep')).addEventListener('change', resetStorePageAndRender);
+        document.getElementById(pfx('store-search')).addEventListener('input', resetStorePageAndRender);
         document.getElementById(pfx('store-sort')).addEventListener('change', resetStorePageAndRender);
         document.getElementById(pfx('store-limit')).addEventListener('change', resetStorePageAndRender);
         document.getElementById(pfx('store-page-prev')).addEventListener('click', () => {
@@ -2420,10 +2503,16 @@
             state.storeCurrentPage += 1;
             renderStore();
         });
-        document.getElementById(pfx('store-sim-store')).addEventListener('change', renderStoreSimulationFromCurrent);
-        document.getElementById(pfx('store-sim-maker')).addEventListener('change', renderStoreSimulationFromCurrent);
-        document.getElementById(pfx('store-sim-rate')).addEventListener('input', renderStoreSimulationFromCurrent);
-        document.getElementById(pfx('store-sim-qty')).addEventListener('input', renderStoreSimulationFromCurrent);
+        const openStoreDetailBtn = document.getElementById(pfx('btn-open-store-detail'));
+        if (openStoreDetailBtn) openStoreDetailBtn.addEventListener('click', () => switchModTab('store-detail'));
+        const oldStoreSimStore = document.getElementById(pfx('store-sim-store'));
+        if (oldStoreSimStore) oldStoreSimStore.addEventListener('change', renderStoreSimulationFromCurrent);
+        const oldStoreSimMaker = document.getElementById(pfx('store-sim-maker'));
+        if (oldStoreSimMaker) oldStoreSimMaker.addEventListener('change', renderStoreSimulationFromCurrent);
+        const oldStoreSimRate = document.getElementById(pfx('store-sim-rate'));
+        if (oldStoreSimRate) oldStoreSimRate.addEventListener('input', renderStoreSimulationFromCurrent);
+        const oldStoreSimQty = document.getElementById(pfx('store-sim-qty'));
+        if (oldStoreSimQty) oldStoreSimQty.addEventListener('input', renderStoreSimulationFromCurrent);
         document.getElementById(pfx('details-maker')).addEventListener('change', renderDetails);
         document.getElementById(pfx('details-sort')).addEventListener('change', renderDetails);
         document.getElementById(pfx('details-search')).addEventListener('input', renderDetails);
