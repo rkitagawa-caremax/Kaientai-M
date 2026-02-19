@@ -2320,21 +2320,45 @@
         const body = document.getElementById(pfx('progress-tbody'));
         if (!body) return;
         const repFilterEl = document.getElementById(pfx('progress-filter-rep'));
+        const customerFilterEl = document.getElementById(pfx('progress-filter-customer'));
+        const repSearch = toStr(document.getElementById(pfx('progress-filter-rep-search'))?.value || '').toLowerCase();
+        const customerSearch = toStr(document.getElementById(pfx('progress-filter-customer-search'))?.value || '').toLowerCase();
         const statusFilter = toStr(document.getElementById(pfx('progress-filter-status'))?.value || 'all');
         const search = toStr(document.getElementById(pfx('progress-filter-search'))?.value || '').toLowerCase();
 
         renderProgressFormSelectors();
 
-        const reps = [...new Set(state.progressItems.map(item => item.rep).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja'));
+        const repStoreMap = buildProgressRepStoreMap();
+        const allReps = Object.keys(repStoreMap).sort((a, b) => a.localeCompare(b, 'ja'));
+        const reps = repSearch ? allReps.filter(rep => rep.toLowerCase().includes(repSearch)) : allReps;
         if (repFilterEl) {
-            const prev = repFilterEl.value;
+            const prev = toStr(repFilterEl.value || 'all');
             repFilterEl.innerHTML = `<option value="all">全担当</option>${reps.map(rep => `<option value="${escapeHTML(rep)}">${escapeHTML(rep)}</option>`).join('')}`;
-            repFilterEl.value = reps.includes(prev) ? prev : 'all';
+            repFilterEl.value = prev === 'all' || reps.includes(prev) ? prev : 'all';
         }
         const repFilter = toStr(repFilterEl?.value || 'all');
 
+        const storeSet = new Set();
+        if (repFilter !== 'all') {
+            (repStoreMap[repFilter] || new Set()).forEach(store => { if (store) storeSet.add(store); });
+        } else {
+            Object.values(repStoreMap).forEach(set => {
+                if (!(set instanceof Set)) return;
+                set.forEach(store => { if (store) storeSet.add(store); });
+            });
+        }
+        const allCustomers = [...storeSet].sort((a, b) => a.localeCompare(b, 'ja'));
+        const customers = customerSearch ? allCustomers.filter(store => store.toLowerCase().includes(customerSearch)) : allCustomers;
+        if (customerFilterEl) {
+            const prev = toStr(customerFilterEl.value || 'all');
+            customerFilterEl.innerHTML = `<option value="all">全販売店</option>${customers.map(store => `<option value="${escapeHTML(store)}">${escapeHTML(store)}</option>`).join('')}`;
+            customerFilterEl.value = prev === 'all' || customers.includes(prev) ? prev : 'all';
+        }
+        const customerFilter = toStr(customerFilterEl?.value || 'all');
+
         let rows = [...state.progressItems];
         if (repFilter !== 'all') rows = rows.filter(item => item.rep === repFilter);
+        if (customerFilter !== 'all') rows = rows.filter(item => item.customer === customerFilter);
         if (statusFilter !== 'all') rows = rows.filter(item => item.status === statusFilter);
         if (search) {
             rows = rows.filter(item => {
@@ -2904,9 +2928,14 @@
                         <button class="btn-secondary" id="${pfx('progress-clear-form')}">入力クリア</button>
                     </div>
                     <div class="filter-bar">
-                        <label>担当フィルタ</label><select id="${pfx('progress-filter-rep')}"><option value="all">全担当</option></select>
+                        <label>営業担当検索</label><input type="text" id="${pfx('progress-filter-rep-search')}" placeholder="例: 田中">
+                        <label>営業担当候補</label><select id="${pfx('progress-filter-rep')}"><option value="all">全担当</option></select>
+                        <label>販売店検索</label><input type="text" id="${pfx('progress-filter-customer-search')}" placeholder="例: ○○商事 / 12345">
+                        <label>販売店候補</label><select id="${pfx('progress-filter-customer')}"><option value="all">全販売店</option></select>
+                    </div>
+                    <div class="filter-bar">
                         <label>ステータス</label><select id="${pfx('progress-filter-status')}"><option value="all">全て</option><option value="planned">計画中</option><option value="doing">実行中</option><option value="done">完了</option><option value="hold">保留</option></select>
-                        <label>検索</label><input type="text" id="${pfx('progress-filter-search')}" placeholder="担当/顧客/内容">
+                        <label>自由検索</label><input type="text" id="${pfx('progress-filter-search')}" placeholder="担当/顧客/内容/期限">
                     </div>
                     <div class="table-wrapper"><table class="progress-table"><thead><tr><th>営業担当</th><th>顧客</th><th>アクションプラン</th><th>実行期限</th><th>結果</th><th>状態</th><th>更新日時</th><th>編集</th><th>削除</th></tr></thead><tbody id="${pfx('progress-tbody')}"></tbody></table></div>
                 </div>
@@ -3085,7 +3114,10 @@
             clearProgressForm();
             scheduleAutoStateSave(200);
         });
+        document.getElementById(pfx('progress-filter-rep-search')).addEventListener('input', renderProgressTable);
         document.getElementById(pfx('progress-filter-rep')).addEventListener('change', renderProgressTable);
+        document.getElementById(pfx('progress-filter-customer-search')).addEventListener('input', renderProgressTable);
+        document.getElementById(pfx('progress-filter-customer')).addEventListener('change', renderProgressTable);
         document.getElementById(pfx('progress-filter-status')).addEventListener('change', renderProgressTable);
         document.getElementById(pfx('progress-filter-search')).addEventListener('input', renderProgressTable);
         document.getElementById(pfx('progress-rep-toggle')).addEventListener('click', (e) => {
