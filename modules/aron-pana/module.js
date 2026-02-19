@@ -316,6 +316,81 @@
         return settingsUnlocked || unlockTabGroup('settings');
     }
 
+    function normalizeSalesRow(data) {
+        const src = (data && typeof data === 'object') ? data : {};
+        return {
+            orderNo: toStr(src.orderNo ?? src.order_no ?? src['受注番号']),
+            month: toStr(src.month || 'unknown'),
+            maker: toStr(src.maker || 'other'),
+            makerRaw: toStr(src.makerRaw ?? src.maker_raw),
+            salesRep: toStr(src.salesRep ?? src.sales_rep ?? src['営業担当']),
+            store: toStr(src.store ?? src.storeName ?? src.customer ?? src['販売店']),
+            storeCode: toStr(src.storeCode ?? src.store_code ?? src.supplierCode ?? src.customerCode ?? src.dealerCode ?? src['仕入先コード'] ?? src['得意先コード']),
+            prefecture: toStr(src.prefecture ?? src['県名']),
+            jan: toStr(src.jan ?? src.JAN),
+            name: toStr(src.name ?? src.itemName ?? src['商品名']),
+            qty: toNum(src.qty),
+            unitPrice: toNum(src.unitPrice ?? src.unit_price),
+            totalPrice: toNum(src.totalPrice ?? src.total_price)
+        };
+    }
+
+    function fillMissingSalesStoreCodes(rows) {
+        const storeCodeFreq = {};
+        for (const row of rows) {
+            if (!row.store || !row.storeCode) continue;
+            if (!storeCodeFreq[row.store]) storeCodeFreq[row.store] = {};
+            storeCodeFreq[row.store][row.storeCode] = (storeCodeFreq[row.store][row.storeCode] || 0) + 1;
+        }
+        const storeMainCode = {};
+        Object.keys(storeCodeFreq).forEach(store => {
+            let bestCode = '';
+            let bestCount = 0;
+            Object.entries(storeCodeFreq[store]).forEach(([code, count]) => {
+                if (count > bestCount) {
+                    bestCode = code;
+                    bestCount = count;
+                }
+            });
+            if (bestCode) storeMainCode[store] = bestCode;
+        });
+        return rows.map(row => {
+            if (row.storeCode) return row;
+            const fallback = storeMainCode[row.store];
+            return fallback ? { ...row, storeCode: fallback } : row;
+        });
+    }
+
+    function detectSalesStoreCodeColumn(rows, headerRow) {
+        const scoreCol = (row, col) => {
+            const t = normalizeToken(row?.[col]);
+            if (!t) return 0;
+            if (t.includes('仕入先コード')) return 100;
+            if (t.includes('得意先コード')) return 95;
+            if (t.includes('販売店コード')) return 90;
+            if (t.includes('取引先コード')) return 85;
+            if (t.includes('仕入先') && t.includes('コード')) return 80;
+            if (t.includes('得意先') && t.includes('コード')) return 78;
+            if (t.includes('コード')) return 20;
+            return 0;
+        };
+
+        const candidates = [headerRow, headerRow - 1, 0].filter(v => v >= 0 && v < rows.length);
+        let bestCol = COL_STORE_CODE;
+        let bestScore = 0;
+        for (const rowIdx of candidates) {
+            const row = rows[rowIdx] || [];
+            for (let col = 0; col < Math.min(50, row.length); col++) {
+                const sc = scoreCol(row, col);
+                if (sc > bestScore) {
+                    bestScore = sc;
+                    bestCol = col;
+                }
+            }
+        }
+        return bestCol;
+    }
+
     function buildAutoStatePayload() {
         return {
             schemaVersion: 2,
@@ -389,7 +464,7 @@
         }
 
         state.shippingData = payload.shippingData;
-        state.salesData = payload.salesData;
+        state.salesData = fillMissingSalesStoreCodes((payload.salesData || []).map(normalizeSalesRow));
         state.productData = payload.productData;
         state.progressItems = Array.isArray(payload.progressItems)
             ? payload.progressItems.map((item, idx) => normalizeProgressItem(item, idx + 1))
@@ -729,6 +804,8 @@
 
                 const headerRow = findHeaderRow(rows, ['jan', 'janコード', '商品', 'コード', '品番', '数量', '販売', '受注']);
                 log(`  ヘッダー行: ${headerRow}行目`);
+                const storeCodeCol = detectSalesStoreCodeColumn(rows, headerRow);
+                log(`  仕入先コード列: ${storeCodeCol + 1}列目`);
 
                 let count = 0, dateOk = 0, dateFail = 0;
                 for (let i = headerRow + 1; i < rows.length; i++) {
@@ -755,7 +832,7 @@
 
                     const name = toStr(row[COL.I]);
                     const store = toStr(row[COL.D]);
-                    const storeCode = toStr(row[COL_STORE_CODE]);
+                    const storeCode = toStr(row[storeCodeCol]) || toStr(row[COL_STORE_CODE]);
                     const qty = toNum(row[COL.K]);
                     const unitPrice = toNum(row[COL.L]);
                     if (orderNo && seenOrderNos.has(orderNo)) {
@@ -785,6 +862,10 @@
             }
         }
 
+        const beforeFillCodeCount = state.salesData.filter(s => toStr(s.storeCode)).length;
+        state.salesData = fillMissingSalesStoreCodes(state.salesData.map(normalizeSalesRow));
+        const afterFillCodeCount = state.salesData.filter(s => toStr(s.storeCode)).length;
+
         // 診断情報
         log(`検出月一覧: [${[...monthValues].sort().join(', ')}]`);
         log(`S列メーカー表記一覧: [${[...makerValues].join(' / ')}]`);
@@ -792,6 +873,7 @@
         const panaCount = state.salesData.filter(s => s.maker === 'pana').length;
         const otherCount = state.salesData.filter(s => s.maker === 'other').length;
         log(`メーカー判定結果: アロン=${aronCount}件 / パナ=${panaCount}件 / その他=${otherCount}件`);
+        log(`仕入先コード: 取込直後=${beforeFillCodeCount}件 / 補完後=${afterFillCodeCount}件 / 未設定=${state.salesData.length - afterFillCodeCount}件`);
         log(`販売実績追加: ${addedCount}件 / 重複受注番号スキップ: ${duplicateOrderCount}件 / 累計: ${state.salesData.length}件`);
 
         document.getElementById(pfx('status-sales')).textContent = `✓ ${state.salesData.length}件 (+${addedCount}件 / ${parsedList.length}ファイル)`;
@@ -2088,7 +2170,7 @@
             }
 
             state.shippingData = payload.shippingData;
-            state.salesData = payload.salesData;
+            state.salesData = fillMissingSalesStoreCodes((payload.salesData || []).map(normalizeSalesRow));
             state.productData = payload.productData;
             state.progressItems = Array.isArray(payload.progressItems)
                 ? payload.progressItems.map((item, idx) => normalizeProgressItem(item, idx + 1))
