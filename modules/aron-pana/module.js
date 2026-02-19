@@ -12,6 +12,17 @@
     const { util } = KaientaiM;
     const { $, $$, fmt, fmtYen, fmtPct, toNum, toStr, COL, parseExcel, exportCSV, destroyChart, createEl } = util;
 
+    const DEFAULT_SETTINGS = Object.freeze({
+        rebateAron: 0,
+        rebatePana: 0,
+        warehouseFee: 0,
+        warehouseOutFee: 50,
+        monthlyRebates: {},
+        defaultShippingSmall: 100,
+        keywordAron: ['アロン'],
+        keywordPana: ['パナソニック', 'パナ', 'panasonic']
+    });
+
     // ── Module-local state ──
     const state = {
         shippingData: [],
@@ -19,6 +30,7 @@
         productData: [],
         progressItems: [],
         progressSeq: 1,
+        appliedSettings: cloneDefaultSettings(),
         results: null,
         charts: {},
         storeBaseCache: {},
@@ -38,6 +50,7 @@
     let cloudPersistPending = false;
     let uploadUnlocked = false;
     let settingsUnlocked = false;
+    let settingsDirty = false;
 
     function pfx(id) { return MODULE_ID + '-' + id; }
     const COL_STORE_CODE = COL.C; // C列（仕入先コード）
@@ -77,6 +90,28 @@
 
     function normalizeToken(v) {
         return toStr(v).toLowerCase().replace(/[\s　]/g, '');
+    }
+
+    function cloneDefaultSettings() {
+        return {
+            rebateAron: DEFAULT_SETTINGS.rebateAron,
+            rebatePana: DEFAULT_SETTINGS.rebatePana,
+            warehouseFee: DEFAULT_SETTINGS.warehouseFee,
+            warehouseOutFee: DEFAULT_SETTINGS.warehouseOutFee,
+            monthlyRebates: {},
+            defaultShippingSmall: DEFAULT_SETTINGS.defaultShippingSmall,
+            keywordAron: [...DEFAULT_SETTINGS.keywordAron],
+            keywordPana: [...DEFAULT_SETTINGS.keywordPana]
+        };
+    }
+
+    function escapeHTML(v) {
+        return toStr(v)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     function toAreaKey(areaText) {
@@ -241,12 +276,14 @@
 
     function normalizeProgressItem(item, fallbackId) {
         const idNum = Number(item?.id);
+        const deadline = toStr(item?.deadline || item?.dueDate);
         return {
             id: Number.isFinite(idNum) && idNum > 0 ? idNum : fallbackId,
             rep: toStr(item?.rep),
             customer: toStr(item?.customer),
             actionPlan: toStr(item?.actionPlan),
             result: toStr(item?.result),
+            deadline: /^\d{4}-\d{2}-\d{2}$/.test(deadline) ? deadline : '',
             status: toStr(item?.status) || 'planned',
             updatedAt: toStr(item?.updatedAt) || new Date().toISOString()
         };
@@ -274,6 +311,8 @@
                 ? '解除済み: 設定を編集できます'
                 : 'ロック中: 設定編集にはパスワードが必要です';
         }
+        const settingsLockShell = document.getElementById(pfx('settings-lock-shell'));
+        if (settingsLockShell) settingsLockShell.classList.toggle('is-locked', !settingsUnlocked);
 
         const settingsTab = document.getElementById(pfx('tab-settings'));
         if (settingsTab) {
@@ -288,6 +327,7 @@
             });
         }
 
+        updateSettingsSaveState();
         checkAllLoaded();
     }
 
@@ -474,10 +514,17 @@
         resetAnalysisOutputs('データ復元済（再分析待ち）');
         restoreSavedSettings(payload.settings || {});
         applyProgressDraftInputs(payload.progressDraft || {});
+        renderProgressFormSelectors();
         renderProgressTable();
         updateUploadCardsByState();
         checkAllLoaded();
         if (sourceLabel) log(sourceLabel);
+        if (state.shippingData.length > 0 && state.salesData.length > 0 && state.productData.length > 0) {
+            log('--- 自動再分析開始 ---');
+            runAnalysis();
+            if (currentTab !== 'upload' && currentTab !== 'settings') switchModTab(currentTab || 'overview');
+            log('--- 自動再分析完了 ---');
+        }
         return true;
     }
 
@@ -517,7 +564,76 @@
         return [d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')];
     }
 
-    function renderMonthlyRebateInputs() {
+    function normalizeKeywordList(input, fallback) {
+        const src = Array.isArray(input) ? input : toStr(input).split(',');
+        const values = src.map(v => toStr(v).trim().toLowerCase()).filter(Boolean);
+        return values.length > 0 ? values : [...fallback];
+    }
+
+    function normalizeMonthlyRebates(raw) {
+        const src = raw && typeof raw === 'object' ? raw : {};
+        const out = {};
+        Object.keys(src).sort().forEach(month => {
+            const m = src[month] || {};
+            const aron = m.aron || {};
+            const pana = m.pana || {};
+            const normalized = {
+                aron: { achieve: toNum(aron.achieve), car: toNum(aron.car) },
+                pana: { achieve: toNum(pana.achieve), car: toNum(pana.car) }
+            };
+            const sum = normalized.aron.achieve + normalized.aron.car + normalized.pana.achieve + normalized.pana.car;
+            if (sum !== 0) out[month] = normalized;
+        });
+        return out;
+    }
+
+    function pickNumber(value, fallback) {
+        if (value === '' || value == null) return fallback;
+        const n = Number(value);
+        return Number.isFinite(n) ? n : fallback;
+    }
+
+    function normalizeSettings(raw) {
+        const src = raw && typeof raw === 'object' ? raw : {};
+        return {
+            rebateAron: Math.max(0, pickNumber(src.rebateAron, DEFAULT_SETTINGS.rebateAron)),
+            rebatePana: Math.max(0, pickNumber(src.rebatePana, DEFAULT_SETTINGS.rebatePana)),
+            warehouseFee: Math.max(0, pickNumber(src.warehouseFee, DEFAULT_SETTINGS.warehouseFee)),
+            warehouseOutFee: Math.max(0, pickNumber(src.warehouseOutFee, DEFAULT_SETTINGS.warehouseOutFee)),
+            monthlyRebates: normalizeMonthlyRebates(src.monthlyRebates),
+            defaultShippingSmall: Math.max(0, pickNumber(src.defaultShippingSmall, DEFAULT_SETTINGS.defaultShippingSmall)),
+            keywordAron: normalizeKeywordList(src.keywordAron, DEFAULT_SETTINGS.keywordAron),
+            keywordPana: normalizeKeywordList(src.keywordPana, DEFAULT_SETTINGS.keywordPana)
+        };
+    }
+
+    function serializeSettings(settings) {
+        return JSON.stringify(normalizeSettings(settings));
+    }
+
+    function markSettingsDirty(flag) {
+        settingsDirty = !!flag;
+        updateSettingsSaveState();
+    }
+
+    function updateSettingsSaveState() {
+        const el = document.getElementById(pfx('settings-save-state'));
+        if (!el) return;
+        el.classList.remove('dirty', 'locked');
+        if (!settingsUnlocked) {
+            el.classList.add('locked');
+            el.textContent = 'ロック中';
+            return;
+        }
+        if (settingsDirty) {
+            el.classList.add('dirty');
+            el.textContent = '未保存の変更があります';
+            return;
+        }
+        el.textContent = '保存済み設定を使用中';
+    }
+
+    function renderMonthlyRebateInputs(seedMonthlyRebates) {
         const container = document.getElementById(pfx('monthly-rebate-body'));
         if (!container) return;
 
@@ -526,6 +642,7 @@
             const k = `${input.dataset.month}|${input.dataset.maker}|${input.dataset.type}`;
             oldValues[k] = toNum(input.value);
         });
+        const normalizedSeed = normalizeMonthlyRebates(seedMonthlyRebates);
 
         const months = getSalesMonthList();
         container.innerHTML = '';
@@ -538,7 +655,10 @@
             ];
             const fields = keys.map(k => {
                 const key = `${month}|${k.maker}|${k.type}`;
-                const val = oldValues[key] ?? 0;
+                const hasOld = Object.prototype.hasOwnProperty.call(oldValues, key);
+                const val = hasOld
+                    ? oldValues[key]
+                    : toNum(normalizedSeed?.[month]?.[k.maker]?.[k.type]);
                 return `<label class="monthly-rebate-field"><span>${k.label}</span><input type="number" class="monthly-rebate-input" data-month="${month}" data-maker="${k.maker}" data-type="${k.type}" value="${val}" step="1000"></label>`;
             }).join('');
             const row = document.createElement('div');
@@ -567,7 +687,7 @@
             if (!monthlyRebates[month][maker]) monthlyRebates[month][maker] = { achieve: 0, car: 0 };
             monthlyRebates[month][maker][type] = toNum(input.value);
         });
-        return monthlyRebates;
+        return normalizeMonthlyRebates(monthlyRebates);
     }
 
     function getMonthlyRebate(settings, month, maker) {
@@ -598,17 +718,51 @@
         return { warehouseBase, warehouseOut, total: warehouseBase + warehouseOut };
     }
 
-    function getSettings() {
-        return {
+    function readSettingsFromForm() {
+        return normalizeSettings({
             rebateAron: toNum(document.getElementById(pfx('rebate-aron'))?.value) / 100,
             rebatePana: toNum(document.getElementById(pfx('rebate-pana'))?.value) / 100,
             warehouseFee: toNum(document.getElementById(pfx('warehouse-fee'))?.value),
-            warehouseOutFee: toNum(document.getElementById(pfx('warehouse-out-fee'))?.value || 50),
+            warehouseOutFee: toNum(document.getElementById(pfx('warehouse-out-fee'))?.value),
             monthlyRebates: readMonthlyRebateSettings(),
             defaultShippingSmall: toNum(document.getElementById(pfx('default-shipping-small'))?.value),
-            keywordAron: (document.getElementById(pfx('keyword-aron'))?.value || 'アロン').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
-            keywordPana: (document.getElementById(pfx('keyword-pana'))?.value || 'パナソニック,パナ,Panasonic').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
-        };
+            keywordAron: document.getElementById(pfx('keyword-aron'))?.value,
+            keywordPana: document.getElementById(pfx('keyword-pana'))?.value
+        });
+    }
+
+    function applySettingsToForm(settings) {
+        const normalized = normalizeSettings(settings);
+        setInputValue('rebate-aron', normalized.rebateAron * 100);
+        setInputValue('rebate-pana', normalized.rebatePana * 100);
+        setInputValue('warehouse-fee', normalized.warehouseFee);
+        setInputValue('warehouse-out-fee', normalized.warehouseOutFee);
+        setInputValue('default-shipping-small', normalized.defaultShippingSmall);
+        setInputValue('keyword-aron', normalized.keywordAron.join(','));
+        setInputValue('keyword-pana', normalized.keywordPana.join(','));
+        renderMonthlyRebateInputs(normalized.monthlyRebates);
+        const wrap = document.getElementById(pfx('monthly-rebate-body'));
+        if (!wrap) return;
+        wrap.querySelectorAll('input[data-month][data-maker][data-type]').forEach(input => {
+            const month = input.dataset.month;
+            const maker = input.dataset.maker;
+            const type = input.dataset.type;
+            input.value = toNum(normalized.monthlyRebates?.[month]?.[maker]?.[type]);
+        });
+    }
+
+    function getSettings() {
+        return normalizeSettings(state.appliedSettings || cloneDefaultSettings());
+    }
+
+    function saveSettingsFromForm() {
+        if (!ensureSettingsUnlocked()) return false;
+        const next = readSettingsFromForm();
+        state.appliedSettings = next;
+        markSettingsDirty(false);
+        scheduleAutoStateSave(120);
+        updateSettingsSaveState();
+        return true;
     }
 
     function detectMaker(text) {
@@ -878,7 +1032,8 @@
 
         document.getElementById(pfx('status-sales')).textContent = `✓ ${state.salesData.length}件 (+${addedCount}件 / ${parsedList.length}ファイル)`;
         document.getElementById(pfx('card-sales')).classList.add('loaded');
-        renderMonthlyRebateInputs();
+        renderMonthlyRebateInputs(state.appliedSettings?.monthlyRebates || {});
+        renderProgressFormSelectors();
         resetAnalysisOutputs('販売実績更新（再分析待ち）');
         scheduleAutoStateSave();
     }
@@ -2061,11 +2216,90 @@
         }
     }
 
+    function getProgressStatusLabel(status) {
+        const map = { planned: '計画中', doing: '実行中', done: '完了', hold: '保留' };
+        return map[status] || status || '-';
+    }
+
+    function parseDateYmd(ymd) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(toStr(ymd))) return null;
+        const [y, m, d] = ymd.split('-').map(Number);
+        const dt = new Date(y, m - 1, d);
+        if (Number.isNaN(dt.getTime())) return null;
+        return dt;
+    }
+
+    function getDeadlineBadge(item) {
+        if (!item || !item.deadline) return { className: '', mark: '', title: '' };
+        if (item.status === 'done') return { className: 'done', mark: '', title: '' };
+        const due = parseDateYmd(item.deadline);
+        if (!due) return { className: '', mark: '', title: '' };
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        due.setHours(0, 0, 0, 0);
+        const days = Math.round((due.getTime() - today.getTime()) / 86400000);
+        if (days < 0) return { className: 'overdue', mark: '!', title: '期限超過' };
+        if (days <= 3) return { className: 'near', mark: '!', title: `期限まで${days}日` };
+        return { className: '', mark: '', title: '' };
+    }
+
+    function buildProgressRepStoreMap() {
+        const map = {};
+        const addPair = (repRaw, storeRaw) => {
+            const rep = toStr(repRaw);
+            const store = toStr(storeRaw);
+            if (!rep) return;
+            if (!map[rep]) map[rep] = new Set();
+            if (store) map[rep].add(store);
+        };
+        for (const row of state.salesData) addPair(row.salesRep, row.store);
+        for (const item of state.progressItems) addPair(item.rep, item.customer);
+        return map;
+    }
+
+    function renderProgressToggleButtons(container, values, selected, dataKey, emptyText) {
+        if (!container) return;
+        if (!values.length) {
+            container.innerHTML = `<span class="hint">${escapeHTML(emptyText)}</span>`;
+            return;
+        }
+        container.innerHTML = values.map(v => {
+            const active = v === selected ? ' active' : '';
+            return `<button type="button" class="toggle-chip${active}" data-${dataKey}="${escapeHTML(v)}">${escapeHTML(v)}</button>`;
+        }).join('');
+    }
+
+    function renderProgressFormSelectors() {
+        const repInput = document.getElementById(pfx('progress-rep'));
+        const customerInput = document.getElementById(pfx('progress-customer'));
+        const repToggle = document.getElementById(pfx('progress-rep-toggle'));
+        const customerToggle = document.getElementById(pfx('progress-customer-toggle'));
+        if (!repInput || !customerInput) return;
+
+        const map = buildProgressRepStoreMap();
+        const reps = Object.keys(map).sort((a, b) => a.localeCompare(b, 'ja'));
+        let selectedRep = toStr(repInput.value);
+        if (!reps.includes(selectedRep)) selectedRep = '';
+        repInput.value = selectedRep;
+
+        const stores = selectedRep
+            ? [...(map[selectedRep] || new Set())].sort((a, b) => a.localeCompare(b, 'ja'))
+            : [];
+        let selectedCustomer = toStr(customerInput.value);
+        if (!stores.includes(selectedCustomer)) selectedCustomer = '';
+        customerInput.value = selectedCustomer;
+
+        renderProgressToggleButtons(repToggle, reps, selectedRep, 'progress-rep-value', '営業担当が未登録です');
+        const storeHint = selectedRep ? 'この担当に紐づく販売店がありません' : '先に営業担当を選択してください';
+        renderProgressToggleButtons(customerToggle, stores, selectedCustomer, 'progress-customer-value', storeHint);
+    }
+
     function getProgressFormValues() {
         return {
             rep: toStr(document.getElementById(pfx('progress-rep')).value),
             customer: toStr(document.getElementById(pfx('progress-customer')).value),
             actionPlan: toStr(document.getElementById(pfx('progress-action')).value),
+            deadline: toStr(document.getElementById(pfx('progress-deadline')).value),
             result: toStr(document.getElementById(pfx('progress-result')).value),
             status: toStr(document.getElementById(pfx('progress-status')).value || 'planned')
         };
@@ -2076,8 +2310,10 @@
         setInputValue('progress-rep', '');
         setInputValue('progress-customer', '');
         setInputValue('progress-action', '');
+        setInputValue('progress-deadline', '');
         setInputValue('progress-result', '');
         setInputValue('progress-status', 'planned');
+        renderProgressFormSelectors();
     }
 
     function renderProgressTable() {
@@ -2087,10 +2323,12 @@
         const statusFilter = toStr(document.getElementById(pfx('progress-filter-status'))?.value || 'all');
         const search = toStr(document.getElementById(pfx('progress-filter-search'))?.value || '').toLowerCase();
 
+        renderProgressFormSelectors();
+
         const reps = [...new Set(state.progressItems.map(item => item.rep).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja'));
         if (repFilterEl) {
             const prev = repFilterEl.value;
-            repFilterEl.innerHTML = `<option value="all">全担当</option>${reps.map(rep => `<option value="${rep}">${rep}</option>`).join('')}`;
+            repFilterEl.innerHTML = `<option value="all">全担当</option>${reps.map(rep => `<option value="${escapeHTML(rep)}">${escapeHTML(rep)}</option>`).join('')}`;
             repFilterEl.value = reps.includes(prev) ? prev : 'all';
         }
         const repFilter = toStr(repFilterEl?.value || 'all');
@@ -2100,33 +2338,37 @@
         if (statusFilter !== 'all') rows = rows.filter(item => item.status === statusFilter);
         if (search) {
             rows = rows.filter(item => {
-                const hay = `${item.rep} ${item.customer} ${item.actionPlan} ${item.result}`.toLowerCase();
+                const hay = `${item.rep} ${item.customer} ${item.actionPlan} ${item.result} ${item.deadline}`.toLowerCase();
                 return hay.includes(search);
             });
         }
         rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
         body.innerHTML = rows.length === 0
-            ? '<tr><td colspan="8">データがありません</td></tr>'
-            : rows.map(item => `
+            ? '<tr><td colspan="9">データがありません</td></tr>'
+            : rows.map(item => {
+                const badge = getDeadlineBadge(item);
+                return `
                 <tr>
-                    <td>${item.rep || '-'}</td>
-                    <td>${item.customer || '-'}</td>
-                    <td>${item.actionPlan || '-'}</td>
-                    <td>${item.result || '-'}</td>
-                    <td>${item.status || '-'}</td>
+                    <td>${escapeHTML(item.rep || '-')}</td>
+                    <td>${escapeHTML(item.customer || '-')}</td>
+                    <td>${escapeHTML(item.actionPlan || '-')}</td>
+                    <td class="progress-deadline ${badge.className}">${escapeHTML(item.deadline || '-')} ${badge.mark ? `<span class="deadline-flag" title="${escapeHTML(badge.title)}">${badge.mark}</span>` : ''}</td>
+                    <td>${escapeHTML(item.result || '-')}</td>
+                    <td>${escapeHTML(getProgressStatusLabel(item.status))}</td>
                     <td>${toStr(item.updatedAt).replace('T', ' ').slice(0, 16)}</td>
                     <td><button class="btn-secondary progress-edit-btn" data-progress-edit="${item.id}">編集</button></td>
                     <td><button class="btn-secondary progress-delete-btn" data-progress-delete="${item.id}">削除</button></td>
                 </tr>
-            `).join('');
+            `;
+            }).join('');
     }
 
     function saveProgressItem() {
         const editId = toNum(document.getElementById(pfx('progress-edit-id')).value);
         const data = getProgressFormValues();
-        if (!data.rep || !data.customer || !data.actionPlan) {
-            alert('担当者・顧客・アクションプランは必須です');
+        if (!data.rep || !data.customer || !data.actionPlan || !data.deadline) {
+            alert('営業担当・販売店名・アクションプラン・アクション実行期限は必須です');
             return;
         }
 
@@ -2152,8 +2394,10 @@
         setInputValue('progress-rep', item.rep);
         setInputValue('progress-customer', item.customer);
         setInputValue('progress-action', item.actionPlan);
+        setInputValue('progress-deadline', item.deadline || '');
         setInputValue('progress-result', item.result);
         setInputValue('progress-status', item.status);
+        renderProgressFormSelectors();
     }
 
     function deleteProgressItemById(id) {
@@ -2238,6 +2482,10 @@
         if (clearShippingBtn) clearShippingBtn.disabled = !uploadUnlocked || state.shippingData.length === 0;
         const clearProductBtn = document.getElementById(pfx('btn-product-clear'));
         if (clearProductBtn) clearProductBtn.disabled = !uploadUnlocked || state.productData.length === 0;
+        const settingsSaveBtn = document.getElementById(pfx('btn-settings-save'));
+        if (settingsSaveBtn) settingsSaveBtn.disabled = !settingsUnlocked;
+        const recalcBtn = document.getElementById(pfx('btn-recalc'));
+        if (recalcBtn) recalcBtn.disabled = !settingsUnlocked || state.salesData.length === 0;
     }
 
     function setInputValue(id, value) {
@@ -2247,31 +2495,9 @@
     }
 
     function restoreSavedSettings(saved) {
-        if (!saved || typeof saved !== 'object') {
-            renderMonthlyRebateInputs();
-            return;
-        }
-
-        setInputValue('rebate-aron', toNum(saved.rebateAron) * 100);
-        setInputValue('rebate-pana', toNum(saved.rebatePana) * 100);
-        setInputValue('warehouse-fee', toNum(saved.warehouseFee));
-        setInputValue('warehouse-out-fee', toNum(saved.warehouseOutFee) || 50);
-        setInputValue('default-shipping-small', toNum(saved.defaultShippingSmall));
-
-        const kwAron = Array.isArray(saved.keywordAron) ? saved.keywordAron.join(',') : '';
-        const kwPana = Array.isArray(saved.keywordPana) ? saved.keywordPana.join(',') : '';
-        if (kwAron) setInputValue('keyword-aron', kwAron);
-        if (kwPana) setInputValue('keyword-pana', kwPana);
-
-        renderMonthlyRebateInputs();
-        const wrap = document.getElementById(pfx('monthly-rebate-body'));
-        if (!wrap) return;
-        wrap.querySelectorAll('input[data-month][data-maker][data-type]').forEach(input => {
-            const month = input.dataset.month;
-            const maker = input.dataset.maker;
-            const type = input.dataset.type;
-            input.value = toNum(saved.monthlyRebates?.[month]?.[maker]?.[type]);
-        });
+        state.appliedSettings = normalizeSettings(saved || cloneDefaultSettings());
+        applySettingsToForm(state.appliedSettings);
+        markSettingsDirty(false);
     }
 
     function updateUploadCardsByState() {
@@ -2369,6 +2595,7 @@
 
             restoreSavedSettings(payload.settings || {});
             applyProgressDraftInputs(payload.progressDraft || {});
+            renderProgressFormSelectors();
             renderProgressTable();
             updateUploadCardsByState();
             checkAllLoaded();
@@ -2470,35 +2697,46 @@
         <div class="mod-tab" id="${pfx('tab-settings')}">
             <div class="tab-lock-banner">
                 <span id="${pfx('settings-lock-state')}">ロック中: 設定編集にはパスワードが必要です</span>
-                <button class="btn-secondary" id="${pfx('btn-settings-unlock')}">設定ロック解除</button>
             </div>
-            <div class="settings-grid">
-                <div class="setting-card rebate-setting-card">
-                    <h3>リベート設定</h3>
-                    <div class="setting-row"><label>アロン化成 リベート率 (%)</label><input type="number" id="${pfx('rebate-aron')}" value="0" step="0.1" min="0" max="100"></div>
-                    <div class="setting-row"><label>パナソニック リベート率 (%)</label><input type="number" id="${pfx('rebate-pana')}" value="0" step="0.1" min="0" max="100"></div>
-                    <p class="hint">月別固定加算（達成リベート金額・車扱い還元金）を月カード単位で設定できます。</p>
-                    <div class="monthly-rebate-list" id="${pfx('monthly-rebate-body')}"></div>
+            <div class="settings-lock-shell" id="${pfx('settings-lock-shell')}">
+                <div class="settings-lock-overlay">
+                    <div class="settings-lock-panel">
+                        <p>設定内容の表示・編集にはパスワードが必要です。</p>
+                        <button class="btn-primary" id="${pfx('btn-settings-unlock')}">設定ロック解除</button>
+                    </div>
                 </div>
-                <div class="setting-card">
-                    <h3>マイナス要件</h3>
-                    <div class="setting-row"><label>月額 倉庫引き取り費 (円)</label><input type="number" id="${pfx('warehouse-fee')}" value="0" step="100" min="0"></div>
-                    <div class="setting-row"><label>倉庫出し手数料 (円/個)</label><input type="number" id="${pfx('warehouse-out-fee')}" value="50" step="1"></div>
-                    <p class="hint">倉庫出し手数料は 総数量 × 単価 で粗利から減算します。</p>
+                <div class="settings-lockable">
+                    <div class="settings-grid">
+                        <div class="setting-card rebate-setting-card">
+                            <h3>リベート設定</h3>
+                            <div class="setting-row"><label>アロン化成 リベート率 (%)</label><input type="number" id="${pfx('rebate-aron')}" value="0" step="0.1" min="0" max="100"></div>
+                            <div class="setting-row"><label>パナソニック リベート率 (%)</label><input type="number" id="${pfx('rebate-pana')}" value="0" step="0.1" min="0" max="100"></div>
+                            <p class="hint">月別固定加算（達成リベート金額・車扱い還元金）を月カード単位で設定できます。</p>
+                            <div class="monthly-rebate-list" id="${pfx('monthly-rebate-body')}"></div>
+                        </div>
+                        <div class="setting-card">
+                            <h3>マイナス要件</h3>
+                            <div class="setting-row"><label>月額 倉庫引き取り費 (円)</label><input type="number" id="${pfx('warehouse-fee')}" value="0" step="100" min="0"></div>
+                            <div class="setting-row"><label>倉庫出し手数料 (円/個)</label><input type="number" id="${pfx('warehouse-out-fee')}" value="50" step="1"></div>
+                            <p class="hint">倉庫出し手数料は 総数量 × 単価 で粗利から減算します。</p>
+                        </div>
+                        <div class="setting-card">
+                            <h3>送料ルール</h3>
+                            <div class="setting-row"><label>サイズ帯100以下のデフォルト送料 (円)</label><input type="number" id="${pfx('default-shipping-small')}" value="100" step="10" min="0"></div>
+                        </div>
+                        <div class="setting-card">
+                            <h3>メーカー判定キーワード（販売実績 S列から判定）</h3>
+                            <div class="setting-row"><label>アロン化成 判定キーワード</label><input type="text" id="${pfx('keyword-aron')}" value="アロン"></div>
+                            <div class="setting-row"><label>パナソニック 判定キーワード</label><input type="text" id="${pfx('keyword-pana')}" value="パナソニック,パナ,Panasonic"></div>
+                            <p class="hint">※販売実績データのS列の値で判定。(株)等は自動除去。カンマ区切りで複数キーワード指定可。</p>
+                        </div>
+                    </div>
+                    <div class="action-bar">
+                        <button class="btn-primary" id="${pfx('btn-settings-save')}">設定保存</button>
+                        <button class="btn-secondary" id="${pfx('btn-recalc')}">設定を反映して再計算</button>
+                        <span class="settings-save-state" id="${pfx('settings-save-state')}">保存済み設定を使用中</span>
+                    </div>
                 </div>
-                <div class="setting-card">
-                    <h3>送料ルール</h3>
-                    <div class="setting-row"><label>サイズ帯100以下のデフォルト送料 (円)</label><input type="number" id="${pfx('default-shipping-small')}" value="100" step="10" min="0"></div>
-                </div>
-                <div class="setting-card">
-                    <h3>メーカー判定キーワード（販売実績 S列から判定）</h3>
-                    <div class="setting-row"><label>アロン化成 判定キーワード</label><input type="text" id="${pfx('keyword-aron')}" value="アロン"></div>
-                    <div class="setting-row"><label>パナソニック 判定キーワード</label><input type="text" id="${pfx('keyword-pana')}" value="パナソニック,パナ,Panasonic"></div>
-                    <p class="hint">※販売実績データのS列の値で判定。(株)等は自動除去。カンマ区切りで複数キーワード指定可。</p>
-                </div>
-            </div>
-            <div class="action-bar">
-                <button class="btn-primary" id="${pfx('btn-recalc')}">再計算</button>
             </div>
         </div>
 
@@ -2639,13 +2877,28 @@
                 <div class="chart-box full">
                     <h3>進捗管理</h3>
                     <input type="hidden" id="${pfx('progress-edit-id')}" value="">
-                    <div class="filter-bar">
-                        <label>営業担当</label><input type="text" id="${pfx('progress-rep')}" placeholder="例: 田中">
-                        <label>顧客</label><input type="text" id="${pfx('progress-customer')}" placeholder="販売店名">
-                        <label>ステータス</label><select id="${pfx('progress-status')}"><option value="planned">計画中</option><option value="doing">実行中</option><option value="done">完了</option><option value="hold">保留</option></select>
+                    <input type="hidden" id="${pfx('progress-rep')}" value="">
+                    <input type="hidden" id="${pfx('progress-customer')}" value="">
+                    <div class="progress-form-grid">
+                        <div class="progress-form-field">
+                            <label>営業担当 <span class="required">*</span></label>
+                            <div class="toggle-chip-group" id="${pfx('progress-rep-toggle')}"></div>
+                        </div>
+                        <div class="progress-form-field">
+                            <label>販売店名 <span class="required">*</span></label>
+                            <div class="toggle-chip-group" id="${pfx('progress-customer-toggle')}"></div>
+                        </div>
+                        <div class="progress-form-field">
+                            <label>アクション実行期限 <span class="required">*</span></label>
+                            <input type="date" id="${pfx('progress-deadline')}">
+                        </div>
+                        <div class="progress-form-field">
+                            <label>ステータス</label>
+                            <select id="${pfx('progress-status')}"><option value="planned">計画中</option><option value="doing">実行中</option><option value="done">完了</option><option value="hold">保留</option></select>
+                        </div>
                     </div>
-                    <div class="setting-row"><label>アクションプラン</label><input type="text" id="${pfx('progress-action')}" placeholder="例: 値上げ提案の事前打診"></div>
-                    <div class="setting-row"><label>実行結果</label><input type="text" id="${pfx('progress-result')}" placeholder="例: 次回訪問で詳細見積依頼"></div>
+                    <div class="setting-row progress-plan-row"><label>アクションプラン <span class="required">*</span></label><textarea id="${pfx('progress-action')}" rows="2" placeholder="例: 値上げ提案の事前打診"></textarea></div>
+                    <div class="setting-row progress-plan-row"><label>実行結果</label><textarea id="${pfx('progress-result')}" rows="2" placeholder="例: 次回訪問で詳細見積依頼"></textarea></div>
                     <div class="action-bar">
                         <button class="btn-primary" id="${pfx('progress-save')}">登録 / 更新</button>
                         <button class="btn-secondary" id="${pfx('progress-clear-form')}">入力クリア</button>
@@ -2655,7 +2908,7 @@
                         <label>ステータス</label><select id="${pfx('progress-filter-status')}"><option value="all">全て</option><option value="planned">計画中</option><option value="doing">実行中</option><option value="done">完了</option><option value="hold">保留</option></select>
                         <label>検索</label><input type="text" id="${pfx('progress-filter-search')}" placeholder="担当/顧客/内容">
                     </div>
-                    <div class="table-wrapper"><table><thead><tr><th>営業担当</th><th>顧客</th><th>アクションプラン</th><th>結果</th><th>状態</th><th>更新日時</th><th>編集</th><th>削除</th></tr></thead><tbody id="${pfx('progress-tbody')}"></tbody></table></div>
+                    <div class="table-wrapper"><table class="progress-table"><thead><tr><th>営業担当</th><th>顧客</th><th>アクションプラン</th><th>実行期限</th><th>結果</th><th>状態</th><th>更新日時</th><th>編集</th><th>削除</th></tr></thead><tbody id="${pfx('progress-tbody')}"></tbody></table></div>
                 </div>
             </div>
         </div>
@@ -2739,15 +2992,27 @@
         document.getElementById(pfx('btn-recalc')).addEventListener('click', () => {
             if (!ensureSettingsUnlocked()) return;
             if (state.salesData.length === 0) { alert('データを先に読み込んでください。'); return; }
+            if (settingsDirty) {
+                alert('未保存の設定があります。先に「設定保存」を押してください。');
+                return;
+            }
             analyze();
         });
+        const settingsSaveBtn = document.getElementById(pfx('btn-settings-save'));
+        if (settingsSaveBtn) {
+            settingsSaveBtn.addEventListener('click', () => {
+                if (!saveSettingsFromForm()) return;
+                alert('設定を保存しました');
+            });
+        }
 
         const settingsTabEl = document.getElementById(pfx('tab-settings'));
         if (settingsTabEl) {
             const onSettingsChanged = (e) => {
                 const target = e.target;
                 if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement)) return;
-                scheduleAutoStateSave(500);
+                const draft = readSettingsFromForm();
+                markSettingsDirty(serializeSettings(draft) !== serializeSettings(state.appliedSettings));
             };
             settingsTabEl.addEventListener('input', onSettingsChanged);
             settingsTabEl.addEventListener('change', onSettingsChanged);
@@ -2816,10 +3081,32 @@
         document.getElementById(pfx('store-detail-use-seasonality')).addEventListener('change', renderStoreDetail);
 
         document.getElementById(pfx('progress-save')).addEventListener('click', saveProgressItem);
-        document.getElementById(pfx('progress-clear-form')).addEventListener('click', clearProgressForm);
+        document.getElementById(pfx('progress-clear-form')).addEventListener('click', () => {
+            clearProgressForm();
+            scheduleAutoStateSave(200);
+        });
         document.getElementById(pfx('progress-filter-rep')).addEventListener('change', renderProgressTable);
         document.getElementById(pfx('progress-filter-status')).addEventListener('change', renderProgressTable);
         document.getElementById(pfx('progress-filter-search')).addEventListener('input', renderProgressTable);
+        document.getElementById(pfx('progress-rep-toggle')).addEventListener('click', (e) => {
+            const target = e.target;
+            if (!(target instanceof HTMLElement)) return;
+            const rep = toStr(target.getAttribute('data-progress-rep-value'));
+            if (!rep) return;
+            setInputValue('progress-rep', rep);
+            setInputValue('progress-customer', '');
+            renderProgressFormSelectors();
+            scheduleAutoStateSave(250);
+        });
+        document.getElementById(pfx('progress-customer-toggle')).addEventListener('click', (e) => {
+            const target = e.target;
+            if (!(target instanceof HTMLElement)) return;
+            const customer = toStr(target.getAttribute('data-progress-customer-value'));
+            if (!customer) return;
+            setInputValue('progress-customer', customer);
+            renderProgressFormSelectors();
+            scheduleAutoStateSave(250);
+        });
         document.getElementById(pfx('progress-tbody')).addEventListener('click', (e) => {
             const target = e.target;
             if (!(target instanceof HTMLElement)) return;
@@ -2852,7 +3139,8 @@
         init(container) {
             buildHTML(container);
             bindEvents(container);
-            renderMonthlyRebateInputs();
+            restoreSavedSettings(cloneDefaultSettings());
+            renderProgressFormSelectors();
             renderProgressTable();
             applyTabLockState();
             const restoredLocal = restoreAutoState();
