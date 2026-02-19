@@ -1791,6 +1791,160 @@
         })).sort((a, b) => b.sales - a.sales);
     }
 
+    function linearRegression(points) {
+        if (!Array.isArray(points) || points.length < 2) return { slope: 0, intercept: 0, r2: 0 };
+        let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+        const n = points.length;
+        for (const p of points) {
+            sx += p.x; sy += p.y;
+            sxx += p.x * p.x;
+            syy += p.y * p.y;
+            sxy += p.x * p.y;
+        }
+        const den = (n * sxx - sx * sx);
+        if (Math.abs(den) < 1e-9) return { slope: 0, intercept: sy / n, r2: 0 };
+        const slope = (n * sxy - sx * sy) / den;
+        const intercept = (sy - slope * sx) / n;
+
+        const yMean = sy / n;
+        let ssTot = 0, ssRes = 0;
+        for (const p of points) {
+            const pred = slope * p.x + intercept;
+            ssTot += (p.y - yMean) * (p.y - yMean);
+            ssRes += (p.y - pred) * (p.y - pred);
+        }
+        const r2 = ssTot > 1e-9 ? Math.max(0, Math.min(1, 1 - ssRes / ssTot)) : 0;
+        return { slope, intercept, r2 };
+    }
+
+    function monthStrToIndex(monthStr) {
+        const m = toStr(monthStr).match(/^(\d{4})-(\d{1,2})$/);
+        if (!m) return null;
+        const y = toNum(m[1]);
+        const mo = toNum(m[2]);
+        if (y <= 0 || mo < 1 || mo > 12) return null;
+        return y * 12 + (mo - 1);
+    }
+
+    function monthIndexToMonthNo(idx) {
+        return ((idx % 12) + 12) % 12 + 1;
+    }
+
+    function buildMonthlySeries(records) {
+        const map = {};
+        for (const rec of records) {
+            const month = toStr(rec.month);
+            const idx = monthStrToIndex(month);
+            if (idx == null) continue;
+            if (!map[month]) {
+                map[month] = {
+                    month,
+                    idx,
+                    qty: 0,
+                    sales: 0,
+                    cost: 0,
+                    shipping: 0,
+                    unitPriceWeighted: 0,
+                    listWeighted: 0
+                };
+            }
+            const row = map[month];
+            row.qty += rec.qty;
+            row.sales += rec.salesAmount;
+            row.cost += rec.totalCost;
+            row.shipping += rec.totalShipping;
+            row.unitPriceWeighted += rec.unitPrice * rec.qty;
+            row.listWeighted += rec.listPrice * rec.qty;
+        }
+        const arr = Object.values(map).sort((a, b) => a.idx - b.idx);
+        return arr.map(row => ({
+            ...row,
+            unitPrice: row.qty > 0 ? row.unitPriceWeighted / row.qty : 0,
+            costPerQty: row.qty > 0 ? row.cost / row.qty : 0,
+            shippingPerQty: row.qty > 0 ? row.shipping / row.qty : 0,
+            listPrice: row.qty > 0 ? row.listWeighted / row.qty : 0
+        }));
+    }
+
+    function estimateTrendRate(monthlySeries) {
+        if (!Array.isArray(monthlySeries) || monthlySeries.length < 2) return { monthlyRate: 0, confidence: 0, points: monthlySeries?.length || 0, r2: 0 };
+        const points = monthlySeries.map((row, i) => ({ x: i, y: row.qty }));
+        const reg = linearRegression(points);
+        const avgQty = monthlySeries.reduce((sum, row) => sum + row.qty, 0) / Math.max(1, monthlySeries.length);
+        const monthlyRate = avgQty > 0 ? reg.slope / avgQty : 0;
+        const confidence = Math.max(0, Math.min(1, reg.r2 * Math.min(1, monthlySeries.length / 12)));
+        return { monthlyRate, confidence, points: monthlySeries.length, r2: reg.r2 };
+    }
+
+    function estimateElasticity(monthlySeries, manualFallback) {
+        const points = [];
+        for (const row of monthlySeries || []) {
+            if (row.qty > 0 && row.unitPrice > 0) {
+                points.push({ x: Math.log(row.unitPrice), y: Math.log(row.qty) });
+            }
+        }
+        if (points.length < 3) {
+            return { value: manualFallback, source: 'manual', confidence: 0, points: points.length, r2: 0 };
+        }
+        const reg = linearRegression(points);
+        let value = reg.slope;
+        if (!Number.isFinite(value)) value = manualFallback;
+        value = Math.max(-5, Math.min(1, value));
+        const confidence = Math.max(0, Math.min(1, reg.r2 * Math.min(1, points.length / 12)));
+        return { value, source: 'estimated', confidence, points: points.length, r2: reg.r2 };
+    }
+
+    function estimateSeasonality(monthlySeries, horizonMonths) {
+        if (!Array.isArray(monthlySeries) || monthlySeries.length < 6) return { factor: 1, source: 'neutral' };
+        const avgQty = monthlySeries.reduce((sum, row) => sum + row.qty, 0) / Math.max(1, monthlySeries.length);
+        if (avgQty <= 0) return { factor: 1, source: 'neutral' };
+        const byMonthNo = {};
+        for (const row of monthlySeries) {
+            const mo = monthIndexToMonthNo(row.idx);
+            if (!byMonthNo[mo]) byMonthNo[mo] = [];
+            byMonthNo[mo].push(row.qty / avgQty);
+        }
+        const meanRatio = {};
+        for (const k of Object.keys(byMonthNo)) {
+            const arr = byMonthNo[k];
+            meanRatio[k] = arr.reduce((sum, v) => sum + v, 0) / Math.max(1, arr.length);
+        }
+        const lastIdx = monthlySeries[monthlySeries.length - 1].idx;
+        const baseMonthNo = monthIndexToMonthNo(lastIdx);
+        const targetMonthNo = monthIndexToMonthNo(lastIdx + Math.max(1, horizonMonths));
+        const baseRatio = meanRatio[baseMonthNo] || 1;
+        const targetRatio = meanRatio[targetMonthNo] || 1;
+        const factor = Math.max(0.7, Math.min(1.3, targetRatio / baseRatio));
+        return { factor, source: 'estimated' };
+    }
+
+    function weightedCostShippingList(records) {
+        let qty = 0;
+        let unitPriceWeighted = 0;
+        let costWeighted = 0;
+        let shippingWeighted = 0;
+        let aronNum = 0, aronDen = 0, panaNum = 0, panaDen = 0;
+        for (const rec of records) {
+            if (rec.qty <= 0) continue;
+            qty += rec.qty;
+            unitPriceWeighted += rec.unitPrice * rec.qty;
+            costWeighted += rec.effectiveCost * rec.qty;
+            shippingWeighted += rec.shippingCost * rec.qty;
+            if (rec.listPrice > 0) {
+                if (rec.maker === 'aron') { aronNum += rec.unitPrice * rec.qty; aronDen += rec.listPrice * rec.qty; }
+                if (rec.maker === 'pana') { panaNum += rec.unitPrice * rec.qty; panaDen += rec.listPrice * rec.qty; }
+            }
+        }
+        return {
+            qty,
+            unitPrice: qty > 0 ? unitPriceWeighted / qty : 0,
+            costPerQty: qty > 0 ? costWeighted / qty : 0,
+            shippingPerQty: qty > 0 ? shippingWeighted / qty : 0,
+            aronRate: aronDen > 0 ? aronNum / aronDen : 0,
+            panaRate: panaDen > 0 ? panaNum / panaDen : 0
+        };
+    }
+
     function renderStoreDetail() {
         const r = state.results; if (!r) return;
         document.getElementById(pfx('store-detail-empty')).style.display = 'none';
@@ -1800,9 +1954,18 @@
         const selectEl = document.getElementById(pfx('store-detail-select'));
         const summaryEl = document.getElementById(pfx('store-detail-summary'));
         const tbody = document.getElementById(pfx('store-detail-tbody'));
+        const factorBody = document.getElementById(pfx('store-detail-factor-body'));
         const maker = document.getElementById(pfx('store-detail-maker')).value;
         const rateChange = toNum(document.getElementById(pfx('store-detail-rate')).value) / 100;
-        const qtyIncrease = Math.max(0, toNum(document.getElementById(pfx('store-detail-qty')).value));
+        const qtyIncreasePerMonth = Math.max(0, toNum(document.getElementById(pfx('store-detail-qty')).value));
+        const manualQtyRate = toNum(document.getElementById(pfx('store-detail-manual-rate')).value) / 100;
+        const horizonMonths = Math.max(1, Math.round(toNum(document.getElementById(pfx('store-detail-horizon')).value) || 3));
+        const useTrend = !!document.getElementById(pfx('store-detail-use-trend')).checked;
+        const trendAdjust = toNum(document.getElementById(pfx('store-detail-trend-adjust')).value) / 100;
+        const useElasticAuto = !!document.getElementById(pfx('store-detail-use-elastic-auto')).checked;
+        const manualElasticity = toNum(document.getElementById(pfx('store-detail-elasticity')).value || -1);
+        const useSeasonality = !!document.getElementById(pfx('store-detail-use-seasonality')).checked;
+        const windowMonths = Math.max(1, Math.round(toNum(document.getElementById(pfx('store-detail-window')).value) || 6));
         const q = toStr(searchInput.value).toLowerCase();
 
         const stores = buildStoreDetailMap();
@@ -1822,61 +1985,80 @@
         if (!selected) {
             summaryEl.textContent = '販売店が見つかりません';
             tbody.innerHTML = '<tr><td colspan="8">対象データがありません</td></tr>';
+            if (factorBody) factorBody.innerHTML = '<tr><td colspan="4">要因データがありません</td></tr>';
             return;
         }
 
-        summaryEl.textContent = `仕入先コード: ${selected.codeText || '-'} / 営業担当: ${selected.repText || '(未設定)'} / 明細: ${fmt(selected.records.length)}件`;
-
         const targetRecords = selected.records.filter(rec => maker === 'all' || rec.maker === maker);
-        const targetQtyBase = targetRecords.reduce((sum, rec) => sum + rec.qty, 0);
-        const targetCount = targetRecords.length;
-        const before = { sales: 0, gross: 0, qty: 0, aronNum: 0, aronDen: 0, panaNum: 0, panaDen: 0 };
-        const after = { sales: 0, gross: 0, qty: 0, aronNum: 0, aronDen: 0, panaNum: 0, panaDen: 0 };
-
-        for (const rec of selected.records) {
-            before.sales += rec.salesAmount;
-            before.gross += rec.grossProfit;
-            before.qty += rec.qty;
-            if (rec.listPrice > 0 && rec.qty > 0) {
-                if (rec.maker === 'aron') { before.aronNum += rec.unitPrice * rec.qty; before.aronDen += rec.listPrice * rec.qty; }
-                if (rec.maker === 'pana') { before.panaNum += rec.unitPrice * rec.qty; before.panaDen += rec.listPrice * rec.qty; }
-            }
-
-            const apply = maker === 'all' || rec.maker === maker;
-            let addQty = 0;
-            if (apply && qtyIncrease > 0) {
-                if (targetQtyBase > 0) addQty = qtyIncrease * (rec.qty / targetQtyBase);
-                else if (targetCount > 0) addQty = qtyIncrease / targetCount;
-            }
-            const newQty = rec.qty + addQty;
-            const newUnitPrice = apply ? rec.unitPrice * (1 + rateChange) : rec.unitPrice;
-            const newSales = newQty * newUnitPrice;
-            const newGross = newSales - newQty * rec.effectiveCost - newQty * rec.shippingCost;
-
-            after.sales += newSales;
-            after.gross += newGross;
-            after.qty += newQty;
-            if (rec.listPrice > 0 && newQty > 0) {
-                if (rec.maker === 'aron') { after.aronNum += newUnitPrice * newQty; after.aronDen += rec.listPrice * newQty; }
-                if (rec.maker === 'pana') { after.panaNum += newUnitPrice * newQty; after.panaDen += rec.listPrice * newQty; }
-            }
+        if (targetRecords.length === 0) {
+            summaryEl.textContent = `仕入先コード: ${selected.codeText || '-'} / 営業担当: ${selected.repText || '(未設定)'} / 対象データ0件`;
+            tbody.innerHTML = '<tr><td colspan="8">対象メーカーのデータがありません</td></tr>';
+            if (factorBody) factorBody.innerHTML = '<tr><td colspan="4">要因データがありません</td></tr>';
+            return;
         }
 
-        const beforeRate = before.sales > 0 ? before.gross / before.sales : 0;
-        const afterRate = after.sales > 0 ? after.gross / after.sales : 0;
-        const beforeAronRate = before.aronDen > 0 ? before.aronNum / before.aronDen : 0;
-        const beforePanaRate = before.panaDen > 0 ? before.panaNum / before.panaDen : 0;
-        const afterAronRate = after.aronDen > 0 ? after.aronNum / after.aronDen : 0;
-        const afterPanaRate = after.panaDen > 0 ? after.panaNum / after.panaDen : 0;
+        const monthlySeries = buildMonthlySeries(targetRecords);
+        const recentMonths = monthlySeries.slice(-windowMonths);
+        const refSeries = recentMonths.length > 0 ? recentMonths : monthlySeries;
+        const baseMonthlyQty = refSeries.reduce((sum, row) => sum + row.qty, 0) / Math.max(1, refSeries.length);
+
+        const trend = estimateTrendRate(monthlySeries);
+        const trendRate = useTrend ? (trend.monthlyRate + trendAdjust) : trendAdjust;
+        const elasticityEst = estimateElasticity(monthlySeries, manualElasticity);
+        const elasticity = useElasticAuto ? elasticityEst.value : manualElasticity;
+        const seasonality = useSeasonality ? estimateSeasonality(monthlySeries, horizonMonths).factor : 1;
+
+        const qtyPriceImpact = Math.max(0, 1 + elasticity * rateChange);
+        const qtyTrendImpact = Math.max(0, 1 + trendRate * horizonMonths);
+        const qtyManualImpact = Math.max(0, 1 + manualQtyRate);
+        const combinedMultiplier = Math.max(0, qtyPriceImpact * qtyTrendImpact * qtyManualImpact * seasonality);
+
+        const baseQtyForecast = Math.max(0, baseMonthlyQty * horizonMonths);
+        const forecastQty = Math.max(0, baseQtyForecast * combinedMultiplier + qtyIncreasePerMonth * horizonMonths);
+        const deltaQty = forecastQty - baseQtyForecast;
+
+        const weightedBase = weightedCostShippingList(targetRecords);
+        const baseUnitPrice = weightedBase.unitPrice;
+        const newUnitPrice = baseUnitPrice * (1 + rateChange);
+
+        const beforeSales = baseQtyForecast * baseUnitPrice;
+        const beforeGross = beforeSales - baseQtyForecast * (weightedBase.costPerQty + weightedBase.shippingPerQty);
+        const afterSales = forecastQty * newUnitPrice;
+        const afterGross = afterSales - forecastQty * (weightedBase.costPerQty + weightedBase.shippingPerQty);
+
+        const beforeRate = beforeSales > 0 ? beforeGross / beforeSales : 0;
+        const afterRate = afterSales > 0 ? afterGross / afterSales : 0;
+
+        const beforeAronRate = weightedBase.aronRate;
+        const beforePanaRate = weightedBase.panaRate;
+        const afterAronRate = (maker === 'all' || maker === 'aron') ? beforeAronRate * (1 + rateChange) : beforeAronRate;
+        const afterPanaRate = (maker === 'all' || maker === 'pana') ? beforePanaRate * (1 + rateChange) : beforePanaRate;
+
+        summaryEl.textContent = `仕入先コード: ${selected.codeText || '-'} / 営業担当: ${selected.repText || '(未設定)'} / 履歴${fmt(monthlySeries.length)}ヶ月・明細${fmt(selected.records.length)}件 / 予測期間: ${fmt(horizonMonths)}ヶ月`;
 
         const fmtQty = (n) => (n == null || isNaN(n)) ? '-' : (Math.round(n * 10) / 10).toLocaleString('ja-JP');
         const signedYen = (n) => (n >= 0 ? '+' : '') + fmtYen(n);
         const signedPct = (n) => (n >= 0 ? '+' : '') + fmtPct(n);
         tbody.innerHTML = [
-            `<tr><td>現状</td><td>${fmtYen(before.sales)}</td><td class="${before.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(before.gross)}</td><td>${fmtPct(beforeRate)}</td><td>${fmtQty(before.qty)}</td><td>${beforeAronRate > 0 ? fmtPct(beforeAronRate) : '-'}</td><td>${beforePanaRate > 0 ? fmtPct(beforePanaRate) : '-'}</td><td>-</td></tr>`,
-            `<tr><td>シミュ後</td><td>${fmtYen(after.sales)}</td><td class="${after.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(after.gross)}</td><td>${fmtPct(afterRate)}</td><td>${fmtQty(after.qty)}</td><td>${afterAronRate > 0 ? fmtPct(afterAronRate) : '-'}</td><td>${afterPanaRate > 0 ? fmtPct(afterPanaRate) : '-'}</td><td>-</td></tr>`,
-            `<tr><td>差額</td><td class="${after.sales - before.sales >= 0 ? 'positive' : 'negative'}">${signedYen(after.sales - before.sales)}</td><td class="${after.gross - before.gross >= 0 ? 'positive' : 'negative'}">${signedYen(after.gross - before.gross)}</td><td class="${afterRate - beforeRate >= 0 ? 'positive' : 'negative'}">${signedPct(afterRate - beforeRate)}</td><td class="${after.qty - before.qty >= 0 ? 'positive' : 'negative'}">${after.qty - before.qty >= 0 ? '+' : ''}${fmtQty(after.qty - before.qty)}</td><td class="${afterAronRate - beforeAronRate >= 0 ? 'positive' : 'negative'}">${signedPct(afterAronRate - beforeAronRate)}</td><td class="${afterPanaRate - beforePanaRate >= 0 ? 'positive' : 'negative'}">${signedPct(afterPanaRate - beforePanaRate)}</td><td>${maker === 'all' ? '全メーカー' : maker}</td></tr>`
+            `<tr><td>ベース予測</td><td>${fmtYen(beforeSales)}</td><td class="${beforeGross >= 0 ? 'positive' : 'negative'}">${fmtYen(beforeGross)}</td><td>${fmtPct(beforeRate)}</td><td>${fmtQty(baseQtyForecast)}</td><td>${beforeAronRate > 0 ? fmtPct(beforeAronRate) : '-'}</td><td>${beforePanaRate > 0 ? fmtPct(beforePanaRate) : '-'}</td><td>${maker === 'all' ? '全メーカー' : maker}</td></tr>`,
+            `<tr><td>高度シミュ後</td><td>${fmtYen(afterSales)}</td><td class="${afterGross >= 0 ? 'positive' : 'negative'}">${fmtYen(afterGross)}</td><td>${fmtPct(afterRate)}</td><td>${fmtQty(forecastQty)}</td><td>${afterAronRate > 0 ? fmtPct(afterAronRate) : '-'}</td><td>${afterPanaRate > 0 ? fmtPct(afterPanaRate) : '-'}</td><td>${maker === 'all' ? '全メーカー' : maker}</td></tr>`,
+            `<tr><td>差分</td><td class="${afterSales - beforeSales >= 0 ? 'positive' : 'negative'}">${signedYen(afterSales - beforeSales)}</td><td class="${afterGross - beforeGross >= 0 ? 'positive' : 'negative'}">${signedYen(afterGross - beforeGross)}</td><td class="${afterRate - beforeRate >= 0 ? 'positive' : 'negative'}">${signedPct(afterRate - beforeRate)}</td><td class="${deltaQty >= 0 ? 'positive' : 'negative'}">${deltaQty >= 0 ? '+' : ''}${fmtQty(deltaQty)}</td><td class="${afterAronRate - beforeAronRate >= 0 ? 'positive' : 'negative'}">${signedPct(afterAronRate - beforeAronRate)}</td><td class="${afterPanaRate - beforePanaRate >= 0 ? 'positive' : 'negative'}">${signedPct(afterPanaRate - beforePanaRate)}</td><td>複合予測</td></tr>`
         ].join('');
+
+        if (factorBody) {
+            const confidence = Math.max(0, Math.min(1, (trend.confidence + elasticityEst.confidence) / 2));
+            const rows = [
+                { label: 'トレンド率(月次)', value: fmtPct(trend.monthlyRate), memo: `推定値 / R²=${(trend.r2 || 0).toFixed(2)} / ${trend.points}点` },
+                { label: 'トレンド補正', value: fmtPct(trendAdjust), memo: useTrend ? '自動トレンドに加算' : '手動のみ' },
+                { label: '価格弾力性', value: elasticity.toFixed(2), memo: useElasticAuto ? `自動推定 (${elasticityEst.points}点)` : '手動入力' },
+                { label: '価格影響倍率', value: (qtyPriceImpact * 100).toFixed(1) + '%', memo: `価格変動 ${(rateChange * 100).toFixed(1)}%` },
+                { label: '季節性倍率', value: (seasonality * 100).toFixed(1) + '%', memo: useSeasonality ? '季節性ON' : '季節性OFF' },
+                { label: '手動増減率倍率', value: (qtyManualImpact * 100).toFixed(1) + '%', memo: `手動増減率 ${(manualQtyRate * 100).toFixed(1)}%` },
+                { label: '複合数量倍率', value: (combinedMultiplier * 100).toFixed(1) + '%', memo: `絶対増加 +${fmtQty(qtyIncreasePerMonth)}個/月` },
+                { label: '推定信頼度', value: (confidence * 100).toFixed(0) + '%', memo: 'トレンド×弾力性の統合指標' }
+            ];
+            factorBody.innerHTML = rows.map(row => `<tr><td>${row.label}</td><td>${row.value}</td><td>${row.memo}</td></tr>`).join('');
+        }
     }
 
     function getProgressFormValues() {
@@ -2413,11 +2595,25 @@
                         <select id="${pfx('store-detail-maker')}"><option value="all">両メーカー</option><option value="aron">アロン化成のみ</option><option value="pana">パナソニックのみ</option></select>
                         <label>掛率変動(%):</label>
                         <input type="number" id="${pfx('store-detail-rate')}" value="0" step="0.1">
-                        <label>予想販売増加数(個):</label>
+                        <label>予測期間(月):</label>
+                        <input type="number" id="${pfx('store-detail-horizon')}" value="3" step="1" min="1" max="24">
+                        <label>参照期間(月):</label>
+                        <input type="number" id="${pfx('store-detail-window')}" value="6" step="1" min="1" max="24">
+                        <label>手動増減率(%):</label>
+                        <input type="number" id="${pfx('store-detail-manual-rate')}" value="0" step="0.1">
+                        <label>追加数量(個/月):</label>
                         <input type="number" id="${pfx('store-detail-qty')}" value="0" step="1" min="0">
+                        <label><input type="checkbox" id="${pfx('store-detail-use-trend')}" checked> トレンド反映</label>
+                        <label>トレンド補正(%/月):</label>
+                        <input type="number" id="${pfx('store-detail-trend-adjust')}" value="0" step="0.1">
+                        <label><input type="checkbox" id="${pfx('store-detail-use-elastic-auto')}" checked> 弾力性自動推定</label>
+                        <label>価格弾力性(手動):</label>
+                        <input type="number" id="${pfx('store-detail-elasticity')}" value="-1.0" step="0.1">
+                        <label><input type="checkbox" id="${pfx('store-detail-use-seasonality')}" checked> 季節性反映</label>
                     </div>
                     <div class="hint" id="${pfx('store-detail-summary')}"></div>
                     <div class="table-wrapper"><table class="store-sim-table"><thead><tr><th>区分</th><th>売上</th><th>粗利</th><th>粗利率</th><th>数量</th><th>アロン掛率</th><th>パナ掛率</th><th>対象</th></tr></thead><tbody id="${pfx('store-detail-tbody')}"></tbody></table></div>
+                    <div class="table-wrapper"><table class="store-detail-factor-table"><thead><tr><th>予測要因</th><th>値</th><th>説明</th></tr></thead><tbody id="${pfx('store-detail-factor-body')}"></tbody></table></div>
                 </div>
             </div>
         </div>
@@ -2609,7 +2805,15 @@
         document.getElementById(pfx('store-detail-select')).addEventListener('change', renderStoreDetail);
         document.getElementById(pfx('store-detail-maker')).addEventListener('change', renderStoreDetail);
         document.getElementById(pfx('store-detail-rate')).addEventListener('input', renderStoreDetail);
+        document.getElementById(pfx('store-detail-horizon')).addEventListener('input', renderStoreDetail);
+        document.getElementById(pfx('store-detail-window')).addEventListener('input', renderStoreDetail);
+        document.getElementById(pfx('store-detail-manual-rate')).addEventListener('input', renderStoreDetail);
         document.getElementById(pfx('store-detail-qty')).addEventListener('input', renderStoreDetail);
+        document.getElementById(pfx('store-detail-use-trend')).addEventListener('change', renderStoreDetail);
+        document.getElementById(pfx('store-detail-trend-adjust')).addEventListener('input', renderStoreDetail);
+        document.getElementById(pfx('store-detail-use-elastic-auto')).addEventListener('change', renderStoreDetail);
+        document.getElementById(pfx('store-detail-elasticity')).addEventListener('input', renderStoreDetail);
+        document.getElementById(pfx('store-detail-use-seasonality')).addEventListener('change', renderStoreDetail);
 
         document.getElementById(pfx('progress-save')).addEventListener('click', saveProgressItem);
         document.getElementById(pfx('progress-clear-form')).addEventListener('click', clearProgressForm);
