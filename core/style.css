@@ -616,6 +616,42 @@ tbody tr:last-child td { border-bottom: none; }
     font-size: 13px;
     font-family: inherit;
 }
+.filter-bar select[multiple] {
+    min-width: 150px;
+    min-height: 96px;
+    padding: 6px;
+}
+
+.advanced-sim-box {
+    border: 1px solid #c5cae9;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #f7f9ff 0%, #eef4ff 100%);
+    padding: 14px;
+    margin-bottom: 14px;
+}
+.advanced-sim-box h3 {
+    margin-bottom: 10px;
+    color: var(--primary);
+    font-size: 14px;
+}
+.advanced-sim-controls {
+    margin-bottom: 10px;
+}
+.advanced-sim-formula p {
+    margin: 4px 0;
+    font-size: 12px;
+    color: var(--text-light);
+}
+
+.details-table thead th:last-child,
+.details-table tbody td:last-child {
+    text-align: left;
+    white-space: normal;
+    min-width: 360px;
+}
+.details-exec {
+    line-height: 1.45;
+}
 
 .tab-lock-banner {
     display: flex;

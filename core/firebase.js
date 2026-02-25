@@ -12,7 +12,8 @@
 
     const ROOT_COLLECTION = 'kaientai_m_states';
     const CHUNK_COLLECTION = 'chunks';
-    const CHUNK_SIZE = 700000;
+    // Keep chunks well below Firestore's 1MiB/doc limit even with multibyte text.
+    const CHUNK_SIZE = 120000;
 
     let app = null;
     let db = null;

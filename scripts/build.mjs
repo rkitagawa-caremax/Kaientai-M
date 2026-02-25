@@ -10,7 +10,6 @@ rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
 
 copyFileSync(resolve(root, 'index.html'), resolve(dist, 'index.html'));
-copyFileSync(resolve(root, 'netlify.toml'), resolve(dist, 'netlify.toml'));
 cpSync(resolve(root, 'core'), resolve(dist, 'core'), { recursive: true });
 cpSync(resolve(root, 'modules'), resolve(dist, 'modules'), { recursive: true });
 
