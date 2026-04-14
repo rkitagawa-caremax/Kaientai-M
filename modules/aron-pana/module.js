@@ -48,7 +48,7 @@
     const AUTO_STATE_META_KEY = AUTO_STATE_STORAGE_KEY + '-meta';
     const AUTO_STATE_CHUNK_PREFIX = AUTO_STATE_STORAGE_KEY + '-chunk-';
     const AUTO_STATE_CHUNK_SIZE = 120000;
-    const EDIT_PASSWORD = 'ogura';
+    let authHydrated = false;
     let autoPersistTimer = null;
     let cloudPersistTimer = null;
     let cloudPersistInFlight = false;
@@ -263,7 +263,7 @@
     function setMultiSelectOptions(selectEl, values, prevSelected) {
         if (!selectEl) return [];
         const selectedSet = new Set((prevSelected || []).map(v => toStr(v)));
-        selectEl.innerHTML = (values || []).map(v => `<option value="${v}">${v}</option>`).join('');
+        selectEl.innerHTML = (values || []).map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join('');
         const applied = [];
         Array.from(selectEl.options).forEach(opt => {
             if (selectedSet.has(opt.value)) {
@@ -307,11 +307,11 @@
             const fields = keys.map(k => {
                 const key = `${month}|${k.maker}|${k.type}`;
                 const val = oldValues[key] ?? 0;
-                return `<label class="monthly-rebate-field"><span>${k.label}</span><input type="number" class="monthly-rebate-input" data-month="${month}" data-maker="${k.maker}" data-type="${k.type}" value="${val}" step="1000"></label>`;
+                return `<label class="monthly-rebate-field"><span>${escHtml(k.label)}</span><input type="number" class="monthly-rebate-input" data-month="${escHtml(month)}" data-maker="${escHtml(k.maker)}" data-type="${escHtml(k.type)}" value="${Number(val) || 0}" step="1000"></label>`;
             }).join('');
             const row = document.createElement('div');
             row.className = 'monthly-rebate-row';
-            row.innerHTML = `<div class="monthly-rebate-month">${month}</div><div class="monthly-rebate-grid">${fields}</div>`;
+            row.innerHTML = `<div class="monthly-rebate-month">${escHtml(month)}</div><div class="monthly-rebate-grid">${fields}</div>`;
             container.appendChild(row);
         }
     }
@@ -1175,7 +1175,7 @@
                 const { rebate, whFee, realProfit } = calcMonthlyReal(e, r);
                 const pr = e.sales > 0 ? realProfit / e.sales : 0;
                 const tr = document.createElement('tr');
-                tr.innerHTML = `<td>${e.month}</td><td>${ml[e.maker] || e.maker}</td><td>${fmtYen(e.sales)}</td><td>${fmtYen(e.cost)}</td><td>${fmtYen(e.shipping)}</td><td class="${e.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(e.gross)}</td><td>${fmtYen(rebate)}</td><td>${fmtYen(whFee)}</td><td class="${realProfit >= 0 ? 'positive' : 'negative'}">${fmtYen(realProfit)}</td><td>${fmtPct(pr)}</td>`;
+                tr.innerHTML = `<td>${escHtml(e.month)}</td><td>${escHtml(ml[e.maker] || e.maker)}</td><td>${fmtYen(e.sales)}</td><td>${fmtYen(e.cost)}</td><td>${fmtYen(e.shipping)}</td><td class="${e.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(e.gross)}</td><td>${fmtYen(rebate)}</td><td>${fmtYen(whFee)}</td><td class="${realProfit >= 0 ? 'positive' : 'negative'}">${fmtYen(realProfit)}</td><td>${fmtPct(pr)}</td>`;
                 tbody.appendChild(tr);
 
                 monthTotal.sales += e.sales; monthTotal.cost += e.cost; monthTotal.shipping += e.shipping;
@@ -1188,7 +1188,7 @@
                 const tr = document.createElement('tr');
                 tr.style.background = '#e8eaf6';
                 tr.style.fontWeight = '700';
-                tr.innerHTML = `<td>${month}</td><td>【合計】</td><td>${fmtYen(monthTotal.sales)}</td><td>${fmtYen(monthTotal.cost)}</td><td>${fmtYen(monthTotal.shipping)}</td><td class="${monthTotal.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(monthTotal.gross)}</td><td>${fmtYen(monthTotal.rebate)}</td><td>${fmtYen(monthTotal.whFee)}</td><td class="${monthTotal.real >= 0 ? 'positive' : 'negative'}">${fmtYen(monthTotal.real)}</td><td>${fmtPct(pr)}</td>`;
+                tr.innerHTML = `<td>${escHtml(month)}</td><td>【合計】</td><td>${fmtYen(monthTotal.sales)}</td><td>${fmtYen(monthTotal.cost)}</td><td>${fmtYen(monthTotal.shipping)}</td><td class="${monthTotal.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(monthTotal.gross)}</td><td>${fmtYen(monthTotal.rebate)}</td><td>${fmtYen(monthTotal.whFee)}</td><td class="${monthTotal.real >= 0 ? 'positive' : 'negative'}">${fmtYen(monthTotal.real)}</td><td>${fmtPct(pr)}</td>`;
                 tbody.appendChild(tr);
             }
 
@@ -1427,7 +1427,7 @@
             if (simStoreList.length === 0) {
                 simStoreSel.innerHTML = '<option value="">販売店なし</option>';
             } else {
-                for (const sName of simStoreList) simStoreSel.innerHTML += `<option value="${sName}">${sName}</option>`;
+                for (const sName of simStoreList) simStoreSel.innerHTML += `<option value="${escHtml(sName)}">${escHtml(sName)}</option>`;
             }
             simStoreSel.value = simStoreList.includes(prevSimStore) ? prevSimStore : (simStoreList[0] || '');
         } else if (!simStoreSel.value && simStoreList.length > 0) {
@@ -1618,7 +1618,7 @@
         const displayed = entries.slice(startIndex, startIndex + pageSize);
         const tbody = document.getElementById(pfx('store-tbody'));
         tbody.innerHTML = displayed.map(e =>
-            `<tr><td>${e.store}</td><td>${e.salesRep}</td><td>${e.aronRate > 0 ? fmtPct(e.aronRate) : '-'}</td><td>${e.panaRate > 0 ? fmtPct(e.panaRate) : '-'}</td><td>${fmtYen(e.sales)}</td><td>${fmtYen(e.cost)}</td><td>${fmtYen(e.shipping)}</td><td class="${e.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(e.gross)}</td><td>${fmtPct(e.rate)}</td><td>${fmt(e.qty)}</td></tr>`
+            `<tr><td>${escHtml(e.store)}</td><td>${escHtml(e.salesRep)}</td><td>${e.aronRate > 0 ? fmtPct(e.aronRate) : '-'}</td><td>${e.panaRate > 0 ? fmtPct(e.panaRate) : '-'}</td><td>${fmtYen(e.sales)}</td><td>${fmtYen(e.cost)}</td><td>${fmtYen(e.shipping)}</td><td class="${e.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(e.gross)}</td><td>${fmtPct(e.rate)}</td><td>${fmt(e.qty)}</td></tr>`
         ).join('');
 
         const summaryEl = document.getElementById(pfx('store-summary'));
@@ -2180,7 +2180,7 @@
                     const codeLabel = info && info.supplierCodes.size > 0
                         ? ` [${[...info.supplierCodes].sort().join(',')}]`
                         : '';
-                    return `<option value="${storeName}">${storeName}${codeLabel}</option>`;
+                    return `<option value="${escHtml(storeName)}">${escHtml(storeName)}${escHtml(codeLabel)}</option>`;
                 }).join('');
             }
             storeSel.value = filteredStores.includes(prevStore) ? prevStore : (filteredStores[0] || '');
@@ -2208,7 +2208,7 @@
         if (monthSel.dataset.version !== monthVersion) {
             const prevMonth = monthSel.value;
             monthSel.innerHTML = '<option value="all">全期間</option>';
-            for (const m of months) monthSel.innerHTML += `<option value="${m}">${m}</option>`;
+            for (const m of months) monthSel.innerHTML += `<option value="${escHtml(m)}">${escHtml(m)}</option>`;
             monthSel.value = months.includes(prevMonth) ? prevMonth : 'all';
             monthSel.dataset.version = monthVersion;
             if (!keepPage) state.storeDetailCurrentPage = 1;
@@ -2216,7 +2216,7 @@
         if (repSel.dataset.version !== repVersion) {
             const prevRep = repSel.value;
             repSel.innerHTML = '<option value="all">全担当</option>';
-            for (const rep of reps) repSel.innerHTML += `<option value="${rep}">${rep}</option>`;
+            for (const rep of reps) repSel.innerHTML += `<option value="${escHtml(rep)}">${escHtml(rep)}</option>`;
             repSel.value = reps.includes(prevRep) ? prevRep : 'all';
             repSel.dataset.version = repVersion;
             if (!keepPage) state.storeDetailCurrentPage = 1;
@@ -2378,7 +2378,7 @@
         if (productsTbody) {
             productsTbody.innerHTML = displayed.map(e => {
                 const pr = e.sales > 0 ? e.gross / e.sales : 0;
-                return `<tr><td>${e.jan || '-'}</td><td>${e.name || '-'}</td><td>${ml[e.maker] || e.maker}</td><td>${fmt(e.qty)}</td><td>${fmtYen(e.sales)}</td><td>${fmtYen(e.cost)}</td><td>${fmtYen(e.shipping)}</td><td class="${e.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(e.gross)}</td><td>${fmtPct(pr)}</td></tr>`;
+                return `<tr><td>${escHtml(e.jan || '-')}</td><td>${escHtml(e.name || '-')}</td><td>${escHtml(ml[e.maker] || e.maker)}</td><td>${fmt(e.qty)}</td><td>${fmtYen(e.sales)}</td><td>${fmtYen(e.cost)}</td><td>${fmtYen(e.shipping)}</td><td class="${e.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(e.gross)}</td><td>${fmtPct(pr)}</td></tr>`;
             }).join('');
         }
         if (productSummaryEl) {
@@ -2486,10 +2486,10 @@
 
     async function persistCloudStateNow() {
         if (!window.KaientaiCloud || typeof window.KaientaiCloud.saveModuleState !== 'function') {
-            throw new Error('Cloud API unavailable');
+            throw new Error('クラウドAPIを利用できません');
         }
         if (!(window.KaientaiCloud.isReady && window.KaientaiCloud.isReady())) {
-            throw new Error('Cloud not ready');
+            throw new Error('クラウド保存の準備ができていません');
         }
         await window.KaientaiCloud.saveModuleState(MODULE_ID, buildAutoStatePayload());
         return true;
@@ -2600,8 +2600,9 @@
         restoreSavedSettings(payload.settings || {});
         setProgressForm(null);
         updateUploadCardsByState();
+        renderProgress();
         checkAllLoaded();
-        KaientaiM.updateModuleStatus(MODULE_ID, `Data loaded (${state.salesData.length})`, true);
+        KaientaiM.updateModuleStatus(MODULE_ID, `データ読込済み (${state.salesData.length})`, true);
 
         ['overview', 'monthly', 'store', 'sim', 'store-detail', 'progress', 'details'].forEach(id => {
             const emp = document.getElementById(pfx(id + '-empty'));
@@ -2630,7 +2631,7 @@
             const raw = readLocalAutoState();
             if (!raw) return false;
             const payload = JSON.parse(raw);
-            return applyLoadedPayload(payload, 'Auto restore complete');
+            return applyLoadedPayload(payload, '自動復元が完了しました');
         } catch (err) {
             console.warn('restoreAutoState failed', err);
             return false;
@@ -2644,7 +2645,7 @@
         try {
             const payload = await window.KaientaiCloud.loadModuleState(MODULE_ID);
             if (!payload) return false;
-            const applied = applyLoadedPayload(payload, 'Cloud auto restore complete');
+            const applied = applyLoadedPayload(payload, 'クラウド自動復元が完了しました');
             if (applied) saveAutoStateNow();
             return applied;
         } catch (err) {
@@ -2778,14 +2779,14 @@
         const repVersion = master.reps.join('|');
         if (repFilter.dataset.version !== repVersion) {
             const prev = repFilter.value;
-            repFilter.innerHTML = '<option value="all">全担当</option>' + master.reps.map(rep => `<option value="${rep}">${rep}</option>`).join('');
+            repFilter.innerHTML = '<option value="all">全担当</option>' + master.reps.map(rep => `<option value="${escHtml(rep)}">${escHtml(rep)}</option>`).join('');
             repFilter.value = master.reps.includes(prev) ? prev : 'all';
             repFilter.dataset.version = repVersion;
             if (!keepPage) state.progressCurrentPage = 1;
         }
         if (repFormSel.dataset.version !== repVersion) {
             const prev = repFormSel.value;
-            repFormSel.innerHTML = '<option value="">担当を選択</option>' + master.reps.map(rep => `<option value="${rep}">${rep}</option>`).join('');
+            repFormSel.innerHTML = '<option value="">担当を選択</option>' + master.reps.map(rep => `<option value="${escHtml(rep)}">${escHtml(rep)}</option>`).join('');
             repFormSel.value = master.reps.includes(prev) ? prev : '';
             repFormSel.dataset.version = repVersion;
         }
@@ -3007,7 +3008,7 @@
             const rt = e.listPrice > 0 ? avgP / e.listPrice : 0;
             const pr = e.sales > 0 ? e.gross / e.sales : 0;
             const summary = buildProductExecutiveSummary(e);
-            return `<tr><td>${e.jan}</td><td>${e.name}</td><td>${ml[e.maker] || e.maker}</td><td>${fmtYen(e.listPrice)}</td><td>${fmtYen(e.effectiveCost)}</td><td>${fmtYen(avgP)}</td><td>${fmtPct(rt)}</td><td>${fmtYen(e.shippingCost)}</td><td>${fmt(e.qty)}</td><td>${fmtYen(e.sales)}</td><td class="${e.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(e.gross)}</td><td>${fmtPct(pr)}</td><td class="details-exec">${escHtml(summary)}</td></tr>`;
+            return `<tr><td>${escHtml(e.jan)}</td><td>${escHtml(e.name)}</td><td>${escHtml(ml[e.maker] || e.maker)}</td><td>${fmtYen(e.listPrice)}</td><td>${fmtYen(e.effectiveCost)}</td><td>${fmtYen(avgP)}</td><td>${fmtPct(rt)}</td><td>${fmtYen(e.shippingCost)}</td><td>${fmt(e.qty)}</td><td>${fmtYen(e.sales)}</td><td class="${e.gross >= 0 ? 'positive' : 'negative'}">${fmtYen(e.gross)}</td><td>${fmtPct(pr)}</td><td class="details-exec">${escHtml(summary)}</td></tr>`;
         }).join('');
 
         const summaryEl = document.getElementById(pfx('details-summary'));
@@ -3070,24 +3071,127 @@
         }
     }
 
-    function requestEditUnlock(area) {
-        if (!state.authVerified) {
-            const input = prompt('編集パスワードを入力してください');
-            if (input == null) return false;
-            if (String(input).trim() !== EDIT_PASSWORD) {
-                alert('パスワードが違います');
-                return false;
-            }
-            state.authVerified = true;
-            state.uploadUnlocked = true;
-            state.settingsUnlocked = true;
-        } else if (area === 'upload') {
-            state.uploadUnlocked = true;
-        } else if (area === 'settings') {
-            state.settingsUnlocked = true;
+    function getAuthClient() {
+        if (!window.KaientaiAuth || typeof window.KaientaiAuth.getStatus !== 'function') return null;
+        return window.KaientaiAuth;
+    }
+
+    function resetSettingsToDefaults() {
+        setInputValue('rebate-aron', 0);
+        setInputValue('rebate-pana', 0);
+        setInputValue('warehouse-fee', 0);
+        setInputValue('warehouse-out-fee', 50);
+        setInputValue('default-shipping-small', 100);
+        setInputValue('keyword-aron', 'アロン');
+        setInputValue('keyword-pana', 'パナソニック,パナ,Panasonic');
+        renderMonthlyRebateInputs();
+    }
+
+    function clearAuthorizedRuntimeState() {
+        clearCloudRestoreRetry();
+        if (autoPersistTimer) {
+            clearTimeout(autoPersistTimer);
+            autoPersistTimer = null;
         }
+        if (cloudPersistTimer) {
+            clearTimeout(cloudPersistTimer);
+            cloudPersistTimer = null;
+        }
+        cloudPersistPending = false;
+        cloudPersistRetryMs = 1000;
+
+        state.shippingData = [];
+        state.salesData = [];
+        state.productData = [];
+        state.progressItems = [];
+        logLines = [];
+        currentTab = 'upload';
+
+        resetAnalysisOutputsForDataChange();
+        resetSettingsToDefaults();
+
+        ['file-shipping', 'file-sales', 'file-product'].forEach(id => {
+            const input = document.getElementById(pfx(id));
+            if (input) input.value = '';
+        });
+
+        const logEl = document.getElementById(pfx('load-log'));
+        if (logEl) logEl.style.display = 'none';
+
+        updateUploadCardsByState();
+        setProgressForm(null);
+        renderProgress();
+        switchModTab('upload');
+        KaientaiM.updateModuleStatus(MODULE_ID, '認証待ち', false);
+    }
+
+    function hydrateAuthorizedSession() {
+        if (authHydrated) return;
+        authHydrated = true;
+
+        loadProgressItems();
+        const restoredLocal = restoreAutoState();
+        if (!restoredLocal) startCloudRestoreRetry();
+        setProgressForm(null);
+        renderProgress();
+    }
+
+    function syncGoogleAuthState(authStatus) {
+        const authorized = !!authStatus?.authorized;
+        const wasAuthorized = state.authVerified;
+
+        state.authVerified = authorized;
+        state.uploadUnlocked = authorized;
+        state.settingsUnlocked = authorized;
         applyAuthLocks();
-        return true;
+
+        if (authorized) {
+            hydrateAuthorizedSession();
+            KaientaiM.updateModuleStatus(
+                MODULE_ID,
+                state.salesData.length > 0 ? `データ読込済み (${state.salesData.length})` : '未設定',
+                state.salesData.length > 0
+            );
+            return;
+        }
+
+        authHydrated = false;
+        if (wasAuthorized) {
+            clearAuthorizedRuntimeState();
+        } else {
+            KaientaiM.updateModuleStatus(MODULE_ID, '認証待ち', false);
+        }
+    }
+
+    function bindGoogleAuth() {
+        const auth = getAuthClient();
+        if (!auth || typeof auth.onAuthStateChanged !== 'function') {
+            KaientaiM.updateModuleStatus(MODULE_ID, '認証エラー', false);
+            return;
+        }
+        auth.onAuthStateChanged(syncGoogleAuthState);
+    }
+
+    function requestEditUnlock(area) {
+        if (state.authVerified) {
+            state.uploadUnlocked = true;
+            state.settingsUnlocked = true;
+            applyAuthLocks();
+            return true;
+        }
+
+        const auth = getAuthClient();
+        if (!auth || typeof auth.signInWithGoogle !== 'function') {
+            alert('Google認証の初期化に失敗しました。');
+            return false;
+        }
+
+        auth.signInWithGoogle().catch(err => {
+            const code = String(err?.code || '');
+            if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return;
+            if (err?.message) alert(err.message);
+        });
+        return false;
     }
 
     function applyAuthLocks() {
@@ -3097,22 +3201,28 @@
         const uploadStatus = document.getElementById(pfx('upload-lock-status'));
         if (uploadStatus) {
             uploadStatus.textContent = uploadLocked
-                ? 'ロック中: 読込/分析にはパスワードが必要です'
-                : '解除済み: データ読込を実行できます';
+                ? 'ロック中: 読込/分析には承認済みGoogleログインが必要です'
+                : '認証済み: データ読込を実行できます';
             uploadStatus.className = 'auth-lock-status ' + (uploadLocked ? 'locked' : 'unlocked');
         }
         const settingsStatus = document.getElementById(pfx('settings-lock-status'));
         if (settingsStatus) {
             settingsStatus.textContent = settingsLocked
-                ? 'ロック中: 設定編集にはパスワードが必要です'
-                : '解除済み: 設定を編集できます';
+                ? 'ロック中: 設定編集には承認済みGoogleログインが必要です'
+                : '認証済み: 設定を編集できます';
             settingsStatus.className = 'auth-lock-status ' + (settingsLocked ? 'locked' : 'unlocked');
         }
 
         const uploadUnlockBtn = document.getElementById(pfx('btn-upload-unlock'));
-        if (uploadUnlockBtn) uploadUnlockBtn.textContent = uploadLocked ? 'パスワード解除' : '解除済み';
+        if (uploadUnlockBtn) {
+            uploadUnlockBtn.textContent = uploadLocked ? 'Googleでログイン' : '認証済み';
+            uploadUnlockBtn.disabled = !uploadLocked;
+        }
         const settingsUnlockBtn = document.getElementById(pfx('btn-settings-unlock'));
-        if (settingsUnlockBtn) settingsUnlockBtn.textContent = settingsLocked ? 'パスワード解除' : '解除済み';
+        if (settingsUnlockBtn) {
+            settingsUnlockBtn.textContent = settingsLocked ? 'Googleでログイン' : '認証済み';
+            settingsUnlockBtn.disabled = !settingsLocked;
+        }
 
         const uploadTargetIds = ['file-shipping', 'file-sales', 'file-product', 'btn-shipping-clear', 'btn-sales-clear', 'btn-product-clear'];
         for (const id of uploadTargetIds) {
@@ -3267,8 +3377,8 @@
         <!-- Upload -->
         <div class="mod-tab active" id="${pfx('tab-upload')}">
             <div class="auth-lock-bar">
-                <span class="auth-lock-status locked" id="${pfx('upload-lock-status')}">ロック中: 読込/分析にはパスワードが必要です</span>
-                <button type="button" class="btn-secondary" id="${pfx('btn-upload-unlock')}">パスワード解除</button>
+                <span class="auth-lock-status locked" id="${pfx('upload-lock-status')}">ロック中: 読込/分析には承認済みGoogleログインが必要です</span>
+                <button type="button" class="btn-secondary" id="${pfx('btn-upload-unlock')}">Googleでログイン</button>
             </div>
             <div class="upload-grid">
                 <div class="upload-card" id="${pfx('card-shipping')}">
@@ -3309,8 +3419,8 @@
         <!-- Settings -->
         <div class="mod-tab" id="${pfx('tab-settings')}">
             <div class="auth-lock-bar">
-                <span class="auth-lock-status locked" id="${pfx('settings-lock-status')}">ロック中: 設定編集にはパスワードが必要です</span>
-                <button type="button" class="btn-secondary" id="${pfx('btn-settings-unlock')}">パスワード解除</button>
+                <span class="auth-lock-status locked" id="${pfx('settings-lock-status')}">ロック中: 設定編集には承認済みGoogleログインが必要です</span>
+                <button type="button" class="btn-secondary" id="${pfx('btn-settings-unlock')}">Googleでログイン</button>
             </div>
             <div class="settings-grid">
                 <div class="setting-card rebate-setting-card">
@@ -3767,14 +3877,13 @@
         init(container) {
             buildHTML(container);
             bindEvents(container);
-            loadProgressItems();
             renderMonthlyRebateInputs();
-            const restoredLocal = restoreAutoState();
-            if (!restoredLocal) startCloudRestoreRetry();
             applyAuthLocks();
             setProgressForm(null);
             renderProgress();
             setStoreAdvancedMode(false);
+            KaientaiM.updateModuleStatus(MODULE_ID, '認証待ち', false);
+            bindGoogleAuth();
         },
         onShow() {
             if (currentTab === 'progress') {
@@ -3788,3 +3897,5 @@
     });
 
 })();
+
+

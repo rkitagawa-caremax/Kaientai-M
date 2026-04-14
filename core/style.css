@@ -1,4 +1,4 @@
-/* ============================================================
+﻿/* ============================================================
    Kaientai-M  —  Core Platform Styles
    ============================================================ */
 :root {
@@ -27,6 +27,94 @@ body {
     background: var(--bg);
     color: var(--text);
     line-height: 1.6;
+}
+
+body.app-auth-locked {
+    overflow: hidden;
+}
+
+body.app-auth-locked #app {
+    visibility: hidden;
+}
+
+.auth-gate {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: linear-gradient(145deg, rgba(26, 35, 126, 0.96), rgba(57, 73, 171, 0.88));
+    z-index: 1000;
+}
+
+body.app-auth-locked .auth-gate {
+    display: flex;
+}
+
+.auth-gate-card {
+    width: min(560px, 100%);
+    background: rgba(255, 255, 255, 0.98);
+    border-radius: 20px;
+    padding: 32px 28px;
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.2);
+}
+
+.auth-gate-label {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--primary);
+    margin-bottom: 8px;
+}
+
+.auth-gate-card h2 {
+    font-size: 28px;
+    color: var(--primary);
+    margin-bottom: 10px;
+}
+
+.auth-gate-desc {
+    color: var(--text-light);
+    font-size: 14px;
+    margin-bottom: 18px;
+}
+
+.auth-gate-allowlist {
+    background: #f7f8ff;
+    border: 1px solid #d7dcff;
+    border-radius: 14px;
+    padding: 16px 18px;
+}
+
+.auth-gate-allowlist-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--primary);
+    margin-bottom: 8px;
+}
+
+.auth-gate-allowlist-body {
+    margin-left: 18px;
+    color: var(--text);
+    font-size: 14px;
+}
+
+.auth-gate-allowlist-body li + li {
+    margin-top: 4px;
+}
+
+.auth-gate-actions {
+    justify-content: center;
+    margin-top: 18px;
+}
+
+.auth-gate-message {
+    margin-top: 14px;
+    font-size: 13px;
+    color: var(--text-light);
+    text-align: center;
 }
 
 /* ── Layout ── */
@@ -121,6 +209,41 @@ body {
 }
 
 .version { font-size: 11px; opacity: 0.5; }
+
+.sidebar-auth {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 10px;
+    background: rgba(255,255,255,0.06);
+}
+
+.sidebar-auth-label {
+    font-size: 11px;
+    opacity: 0.72;
+}
+
+.sidebar-auth-user {
+    font-size: 12px;
+    font-weight: 600;
+    word-break: break-word;
+}
+
+.sidebar-auth-btn {
+    width: 100%;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: #fff;
+    border-color: rgba(255,255,255,0.45);
+    background: rgba(255,255,255,0.08);
+}
+
+.sidebar-auth-btn:hover {
+    background: rgba(255,255,255,0.18);
+}
 
 /* ── Main ── */
 .main {
@@ -852,4 +975,23 @@ tbody tr:last-child td { border-bottom: none; }
     .page { padding: 16px; }
     .kpi-grid { grid-template-columns: repeat(2, 1fr); }
     .chart-row { flex-direction: column; }
+}
+
+@media (max-width: 900px) {
+    .auth-gate {
+        padding: 16px;
+    }
+
+    .auth-gate-card {
+        padding: 24px 18px;
+        border-radius: 16px;
+    }
+
+    .auth-gate-card h2 {
+        font-size: 22px;
+    }
+
+    .sidebar-auth {
+        display: none;
+    }
 }

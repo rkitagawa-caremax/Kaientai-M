@@ -1,7 +1,8 @@
 ﻿// ============================================================
-// Kaientai-M  窶・ Core Module System
+// Kaientai-M Core Module System
 // ============================================================
-// 蜷・・譫舌Δ繧ｸ繝･繝ｼ繝ｫ縺ｯ縺薙・API繧剃ｽｿ縺｣縺ｦ閾ｪ蛻・・霄ｫ繧堤匳骭ｲ縺吶ｋ縲・// 譁ｰ縺励＞繝｢繧ｸ繝･繝ｼ繝ｫ縺ｯ KaientaiM.registerModule({...}) 繧貞他縺ｶ縺縺代・// ============================================================
+// Modules register themselves via KaientaiM.registerModule({...}).
+// ============================================================
 
 window.KaientaiM = (function () {
     'use strict';
@@ -9,10 +10,17 @@ window.KaientaiM = (function () {
     const modules = [];
     let currentPage = 'home';
 
-    // 笏笏 Shared Utilities (蜈ｨ繝｢繧ｸ繝･繝ｼ繝ｫ蜈ｱ騾・ 笏笏
     const util = {
         $(sel) { return document.querySelector(sel); },
         $$(sel) { return document.querySelectorAll(sel); },
+        escHtml(v) {
+            return String(v == null ? '' : v)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        },
         fmt(n) {
             if (n == null || isNaN(n)) return '-';
             return Math.round(n).toLocaleString('ja-JP');
@@ -33,7 +41,6 @@ window.KaientaiM = (function () {
             let s = String(v).trim();
             if (!s) return 0;
 
-            // Normalize full-width numbers/symbols often seen in CSV exports.
             s = s
                 .replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
                 .replace(/[．，－＋％（）]/g, ch => ({
@@ -62,10 +69,9 @@ window.KaientaiM = (function () {
         },
         toStr(v) {
             if (v == null || v === '') return '';
-            // 謨ｰ蛟､蝙徽AN繧ｳ繝ｼ繝牙ｯｾ遲・ 遘大ｭｦ逧・ｨ俶焚豕輔ｒ謨ｴ謨ｰ譁・ｭ怜・縺ｫ螟画鋤
             if (typeof v === 'number') {
                 if (Number.isInteger(v)) return String(v);
-                // 蟆乗焚轤ｹ縺後≠繧句ｴ蜷医ｂ謨ｴ謨ｰ蛹悶ｒ隧ｦ縺ｿ繧具ｼ・xcel縺ｮ隱､蟾ｮ蟇ｾ遲厄ｼ・                const rounded = Math.round(v);
+                const rounded = Math.round(v);
                 if (Math.abs(v - rounded) < 0.001) return String(rounded);
                 return String(v);
             }
@@ -106,7 +112,10 @@ window.KaientaiM = (function () {
         },
 
         destroyChart(chartStore, id) {
-            if (chartStore[id]) { chartStore[id].destroy(); delete chartStore[id]; }
+            if (chartStore[id]) {
+                chartStore[id].destroy();
+                delete chartStore[id];
+            }
         },
 
         createEl(tag, attrs, innerHTML) {
@@ -117,9 +126,7 @@ window.KaientaiM = (function () {
         }
     };
 
-    // 笏笏 Module Registration 笏笏
     function registerModule(config) {
-        // config: { id, title, icon, description, color, init(containerEl, util) }
         modules.push(config);
         addModuleCard(config);
         addSidebarItem(config);
@@ -131,11 +138,12 @@ window.KaientaiM = (function () {
         const card = document.createElement('div');
         card.className = 'module-card';
         card.style.borderTopColor = cfg.color || '#1a237e';
+        const color = /^[#a-zA-Z0-9]+$/.test(String(cfg.color || '')) ? cfg.color : '#1a237e';
         card.innerHTML = `
-            <div class="module-card-icon" style="color:${cfg.color || '#1a237e'}">${cfg.icon || '&#128202;'}</div>
-            <h3 class="module-card-title">${cfg.title}</h3>
-            <p class="module-card-desc">${cfg.description || ''}</p>
-            <div class="module-card-status" id="mod-status-${cfg.id}">譛ｪ險ｭ螳・/div>
+            <div class="module-card-icon" style="color:${color}">${cfg.icon || '&#128202;'}</div>
+            <h3 class="module-card-title">${util.escHtml(cfg.title)}</h3>
+            <p class="module-card-desc">${util.escHtml(cfg.description || '')}</p>
+            <div class="module-card-status" id="mod-status-${util.escHtml(cfg.id)}">未設定</div>
         `;
         card.addEventListener('click', () => navigateTo(cfg.id));
         grid.appendChild(card);
@@ -146,7 +154,7 @@ window.KaientaiM = (function () {
         const btn = document.createElement('button');
         btn.className = 'sidebar-btn';
         btn.dataset.page = cfg.id;
-        btn.innerHTML = `<span class="sidebar-icon">${cfg.icon || '&#128202;'}</span><span>${cfg.title}</span>`;
+        btn.innerHTML = `<span class="sidebar-icon">${cfg.icon || '&#128202;'}</span><span>${util.escHtml(cfg.title)}</span>`;
         btn.addEventListener('click', () => navigateTo(cfg.id));
         nav.appendChild(btn);
     }
@@ -158,13 +166,11 @@ window.KaientaiM = (function () {
         page.id = 'page-' + cfg.id;
         main.appendChild(page);
 
-        // Initialize module 窶・pass container and utilities
         if (typeof cfg.init === 'function') {
             cfg.init(page, util);
         }
     }
 
-    // 笏笏 Navigation 笏笏
     function navigateTo(pageId) {
         currentPage = pageId;
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -176,7 +182,6 @@ window.KaientaiM = (function () {
         const btn = document.querySelector(`.sidebar-btn[data-page="${pageId}"]`);
         if (btn) btn.classList.add('active');
 
-        // Fire module onShow if exists
         const mod = modules.find(m => m.id === pageId);
         if (mod && typeof mod.onShow === 'function') mod.onShow();
     }
@@ -189,7 +194,6 @@ window.KaientaiM = (function () {
         }
     }
 
-    // Home button
     document.querySelector('.sidebar-btn[data-page="home"]').addEventListener('click', () => navigateTo('home'));
 
     return {

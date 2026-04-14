@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
@@ -13,12 +13,28 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
-    <link rel="stylesheet" href="core/style.css?v=20260219-8">
+    <link rel="stylesheet" href="core/style.css?v=20260329-2">
 </head>
-<body>
+<body class="app-auth-locked">
+    <div class="auth-gate" id="auth-gate" role="dialog" aria-modal="true" aria-labelledby="auth-gate-title">
+        <div class="auth-gate-card">
+            <div class="auth-gate-label">Kaientai-M</div>
+            <h2 id="auth-gate-title">ログインが必要です</h2>
+            <p class="auth-gate-desc">このアプリケーションは承認済みの Google アカウントでのみ利用できます。</p>
+            <div class="auth-gate-allowlist">
+                <div class="auth-gate-allowlist-title">利用可能なアカウント</div>
+                <ul class="auth-gate-allowlist-body" id="auth-allowed-list"></ul>
+            </div>
+            <div class="auth-gate-actions">
+                <button type="button" class="btn-primary" id="auth-gate-signin-btn">Googleでログイン</button>
+            </div>
+            <div class="auth-gate-message" id="auth-gate-message">認証状態を確認しています...</div>
+        </div>
+    </div>
+
     <div id="app">
-        <!-- Sidebar -->
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <span class="logo-icon"><img src="core/assets/app-logo.png" alt="Kaientai-M Logo" class="logo-icon-img"></span>
@@ -32,34 +48,31 @@
                     <span class="sidebar-icon">&#127968;</span>
                     <span>ホーム</span>
                 </button>
-                <!-- Module nav items injected here by core.js -->
             </nav>
             <div class="sidebar-footer">
-                <span class="version">v1.0.8</span>
+                <div class="sidebar-auth">
+                    <div class="sidebar-auth-label">Google認証</div>
+                    <div class="sidebar-auth-user" id="auth-user-label">未ログイン</div>
+                    <button type="button" class="btn-secondary sidebar-auth-btn" id="auth-signin-btn">Googleでログイン</button>
+                    <button type="button" class="btn-secondary sidebar-auth-btn" id="auth-signout-btn" hidden>ログアウト</button>
+                </div>
+                <span class="version">v1.0.9</span>
             </div>
         </aside>
 
-        <!-- Main -->
         <main class="main" id="main">
-            <!-- Home Page -->
             <div class="page active" id="page-home">
                 <div class="page-header">
-                    <h2>分析モジュール</h2>
-                    <p class="page-desc">分析したいモジュールを選択してください。新しいモジュールは随時追加されます。</p>
+                    <h2>ホーム</h2>
+                    <p class="page-desc">利用したいモジュールを選択してください。新しいモジュールは順次追加されます。</p>
                 </div>
-                <div class="module-grid" id="module-grid">
-                    <!-- Module cards injected here by core.js -->
-                </div>
+                <div class="module-grid" id="module-grid"></div>
             </div>
-            <!-- Module pages injected here by core.js -->
         </main>
     </div>
 
-    <script src="core/firebase.js?v=20260219-8"></script>
-    <script src="core/core.js?v=20260219-8"></script>
-    <!-- Modules auto-register themselves -->
-    <script src="modules/aron-pana/module.js?v=20260219-8"></script>
-    <!-- Add new modules here: -->
-    <!-- <script src="modules/new-module/module.js"></script> -->
+    <script src="core/firebase.js?v=20260329-2"></script>
+    <script src="core/core.js?v=20260329-1"></script>
+    <script src="modules/aron-pana/module.js?v=20260329-1"></script>
 </body>
 </html>
